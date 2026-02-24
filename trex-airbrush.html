@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Airbrush T-Rex</title>
+<style>
+body{margin:0;background:#111;display:flex;align-items:center;justify-content:center;min-height:100vh}
+canvas{border-radius:12px;box-shadow:0 0 40px rgba(0,0,0,0.5)}
+#save{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#333;color:#fff;border:none;padding:10px 24px;border-radius:8px;cursor:pointer;font-size:14px;font-family:sans-serif}
+#save:hover{background:#555}
+</style>
+</head>
+<body>
+<canvas id="c" width="1024" height="768"></canvas>
+<button id="save" onclick="saveImg()">Save Image</button>
+<script>
+const c=document.getElementById('c'),ctx=c.getContext('2d');
+
+// Airbrush spray function
+function spray(x,y,radius,color,density=200,alpha=0.02){
+    const [r,g,b]=hexToRgb(color);
+    for(let i=0;i<density;i++){
+        const angle=Math.random()*Math.PI*2;
+        const dist=Math.random()*radius;
+        const px=x+Math.cos(angle)*dist;
+        const py=y+Math.sin(angle)*dist;
+        const a=alpha*(1-dist/radius);
+        ctx.fillStyle=`rgba(${r},${g},${b},${a})`;
+        ctx.beginPath();
+        ctx.arc(px,py,0.5+Math.random()*1.5,0,Math.PI*2);
+        ctx.fill();
+    }
+}
+
+// Soft airbrush stroke (line of sprays)
+function airbrush(x1,y1,x2,y2,radius,color,density=80,alpha=0.025){
+    const dx=x2-x1,dy=y2-y1,dist=Math.sqrt(dx*dx+dy*dy);
+    const steps=Math.max(1,Math.floor(dist/2));
+    for(let i=0;i<=steps;i++){
+        const t=i/steps;
+        spray(x1+dx*t,y1+dy*t,radius,color,density,alpha);
+    }
+}
+
+// Soft glow
+function glow(x,y,radius,color,alpha=0.15){
+    const [r,g,b]=hexToRgb(color);
+    const grad=ctx.createRadialGradient(x,y,0,x,y,radius);
+    grad.addColorStop(0,`rgba(${r},${g},${b},${alpha})`);
+    grad.addColorStop(0.5,`rgba(${r},${g},${b},${alpha*0.4})`);
+    grad.addColorStop(1,`rgba(${r},${g},${b},0)`);
+    ctx.fillStyle=grad;
+    ctx.beginPath();ctx.arc(x,y,radius,0,Math.PI*2);ctx.fill();
+}
+
+// Fill area with airbrush
+function airfill(cx,cy,w,h,color,passes=15,alpha=0.02){
+    for(let p=0;p<passes;p++){
+        for(let i=0;i<60;i++){
+            const x=cx+(Math.random()-0.5)*w;
+            const y=cy+(Math.random()-0.5)*h;
+            spray(x,y,w*0.15,color,30,alpha);
+        }
+    }
+}
+
+function hexToRgb(hex){
+    hex=hex.replace('#','');
+    return[parseInt(hex.substr(0,2),16),parseInt(hex.substr(2,2),16),parseInt(hex.substr(4,2),16)];
+}
+
+// ═══════════════════════════════════════
+//  PAINT THE T-REX
+// ═══════════════════════════════════════
+
+// Background - dramatic sunset/nebula
+function paintBackground(){
+    // Base dark
+    ctx.fillStyle='#0a0a12';ctx.fillRect(0,0,1024,768);
+
+    // Sunset gradient
+    glow(512,700,600,'#1a0a2a',0.4);
+    glow(512,750,500,'#2a0a1a',0.3);
+    glow(300,600,400,'#1a0a3a',0.2);
+    glow(700,500,350,'#2a1a0a',0.15);
+
+    // Background atmosphere
+    for(let i=0;i<8;i++){
+        glow(200+Math.random()*600,200+Math.random()*500,100+Math.random()*200,
+            ['#1a0a2a','#2a0a1a','#0a1a2a','#1a1a0a'][Math.floor(Math.random()*4)],0.06);
+    }
+
+    // Stars
+    for(let i=0;i<80;i++){
+        const x=Math.random()*1024,y=Math.random()*400;
+        const s=0.5+Math.random()*1.5;
+        glow(x,y,s*3,'#ffffff',0.15+Math.random()*0.2);
+        ctx.fillStyle=`rgba(255,255,255,${0.3+Math.random()*0.5})`;
+        ctx.beginPath();ctx.arc(x,y,s,0,Math.PI*2);ctx.fill();
+    }
+
+    // Moon
+    glow(180,120,80,'#aabbdd',0.08);
+    glow(180,120,40,'#bbccee',0.12);
+    glow(180,120,20,'#ddeeff',0.2);
+}
+
+function paintTRex(){
+    // ── BASE BODY SHAPE (dark layer) ──
+    const baseColor='#2a1a0a';
+    const midColor='#4a2a12';
+    const lightColor='#6a3a1a';
+    const highlightColor='#8a5a2a';
+    const warmLight='#aa6a30';
+    const coolShadow='#1a1020';
+
+    // Body mass - dark base
+    glow(480,380,180,baseColor,0.4);
+    glow(480,380,140,midColor,0.3);
+
+    // Build up body with multiple spray passes
+    // Torso
+    for(let p=0;p<20;p++){
+        airbrush(400,350,540,370,60,baseColor,50,0.015);
+        airbrush(420,340,520,380,50,midColor,40,0.012);
+    }
+
+    // Upper body highlight
+    for(let p=0;p<15;p++){
+        airbrush(430,330,510,350,40,lightColor,35,0.01);
+        airbrush(450,320,500,340,30,highlightColor,25,0.008);
+    }
+
+    // Belly (lighter)
+    for(let p=0;p<12;p++){
+        airbrush(420,390,530,410,40,'#5a3a20',30,0.01);
+        airbrush(440,400,520,420,30,'#6a4a28',25,0.008);
+    }
+
+    // ── HEAD ──
+    // Skull shape
+    for(let p=0;p<25;p++){
+        airbrush(280,260,370,290,45,baseColor,50,0.015);
+        airbrush(260,250,340,280,40,midColor,40,0.012);
+        airbrush(270,240,320,260,30,lightColor,30,0.01);
+    }
+
+    // Jaw
+    for(let p=0;p<20;p++){
+        airbrush(260,290,370,310,35,baseColor,45,0.015);
+        airbrush(250,300,360,320,30,'#3a2010',35,0.012);
+    }
+
+    // Jaw underside
+    for(let p=0;p<10;p++){
+        airbrush(280,310,360,325,25,'#5a3a20',25,0.01);
+    }
+
+    // Brow ridge (darker shadow above eye)
+    for(let p=0;p<12;p++){
+        airbrush(310,245,350,255,15,coolShadow,30,0.015);
+        airbrush(305,240,345,250,12,'#1a0a05',25,0.012);
+    }
+
+    // Snout highlight
+    for(let p=0;p<10;p++){
+        airbrush(260,260,290,275,18,highlightColor,20,0.008);
+        airbrush(255,265,280,278,15,warmLight,15,0.006);
+    }
+
+    // ── EYE ──
+    // Eye socket (dark)
+    glow(335,265,14,coolShadow,0.5);
+    glow(335,265,10,'#0a0505',0.6);
+    // Eye
+    glow(335,265,7,'#aa8800',0.5);
+    glow(335,265,5,'#ccaa00',0.6);
+    glow(335,264,4,'#eebb00',0.4);
+    // Pupil
+    glow(336,265,3,'#000000',0.8);
+    ctx.fillStyle='rgba(0,0,0,0.9)';ctx.beginPath();ctx.ellipse(336,265,2,4,0,0,Math.PI*2);ctx.fill();
+    // Eye shine
+    glow(333,263,2,'#ffffff',0.7);
+
+    // ── TEETH ──
+    const teethColor='#ccbbaa';
+    for(let i=0;i<8;i++){
+        const tx=270+i*12,ty=295+Math.sin(i*0.8)*3;
+        const th=8+Math.random()*6;
+        for(let p=0;p<8;p++){
+            airbrush(tx,ty,tx+1,ty+th,4,teethColor,15,0.025);
+            airbrush(tx,ty,tx+1,ty+th,3,'#ddd0c0',10,0.015);
+        }
+        // Tooth tip highlight
+        glow(tx,ty+th,3,'#eee8dd',0.15);
+    }
+    // Upper teeth
+    for(let i=0;i<7;i++){
+        const tx=275+i*11,ty=292;
+        const th=-(6+Math.random()*5);
+        for(let p=0;p<8;p++){
+            airbrush(tx,ty,tx+1,ty+th,4,teethColor,15,0.02);
+        }
+    }
+
+    // ── Mouth line ──
+    for(let p=0;p<15;p++){
+        airbrush(255,293,370,295,6,'#0a0505',40,0.02);
+    }
+    // Mouth interior glimpse
+    glow(300,295,20,'#3a0a0a',0.2);
+    glow(320,296,15,'#4a0a0a',0.15);
+
+    // ── NOSTRILS ──
+    glow(258,262,5,'#0a0505',0.4);
+    glow(258,262,3,'#000000',0.5);
+
+    // ── NECK ──
+    for(let p=0;p<20;p++){
+        airbrush(370,290,430,350,50,baseColor,45,0.012);
+        airbrush(380,300,420,340,40,midColor,35,0.01);
+        airbrush(385,305,410,330,30,lightColor,25,0.008);
+    }
+    // Neck wrinkles
+    for(let p=0;p<6;p++){
+        airbrush(385,310,415,315,8,coolShadow,20,0.01);
+        airbrush(390,325,420,330,8,coolShadow,20,0.01);
+    }
+
+    // ── TINY ARMS ──
+    for(let p=0;p<15;p++){
+        airbrush(450,370,465,410,12,midColor,25,0.015);
+        airbrush(452,375,463,405,10,lightColor,20,0.01);
+        // Claws
+        airbrush(462,408,468,418,5,'#1a1008',15,0.02);
+        airbrush(458,410,464,420,5,'#1a1008',15,0.02);
+    }
+
+    // ── LEGS ──
+    // Left leg (back, darker)
+    for(let p=0;p<20;p++){
+        airbrush(440,430,430,580,40,'#1a0a05',40,0.012);
+        airbrush(430,530,450,620,35,'#1a0a05',35,0.012);
+        airbrush(435,600,470,640,25,'#1a0a05',30,0.012);
+    }
+
+    // Right leg (front, more detail)
+    for(let p=0;p<25;p++){
+        // Thigh
+        airbrush(490,400,510,500,50,baseColor,50,0.012);
+        airbrush(495,410,505,490,40,midColor,40,0.01);
+        airbrush(498,420,503,470,30,lightColor,30,0.008);
+        // Shin
+        airbrush(510,490,520,590,35,baseColor,40,0.012);
+        airbrush(512,495,518,580,28,midColor,30,0.01);
+        // Foot
+        airbrush(515,580,550,620,30,baseColor,35,0.012);
+        airbrush(518,585,545,615,25,midColor,30,0.01);
+    }
+
+    // Claws on foot
+    for(let i=0;i<3;i++){
+        const cx=530+i*10,cy=615;
+        for(let p=0;p<10;p++){
+            airbrush(cx,cy,cx+3,cy+15,5,'#1a1008',20,0.02);
+            airbrush(cx,cy,cx+2,cy+12,4,'#2a1a10',15,0.015);
+        }
+    }
+
+    // ── TAIL ──
+    for(let p=0;p<20;p++){
+        airbrush(540,380,650,400,45,baseColor,45,0.012);
+        airbrush(650,395,760,420,40,baseColor,40,0.01);
+        airbrush(760,418,850,440,30,midColor,30,0.008);
+        // Tail highlights
+        airbrush(560,370,640,385,30,midColor,30,0.008);
+        airbrush(580,365,630,378,22,lightColor,20,0.006);
+    }
+    // Tail tip
+    for(let p=0;p<10;p++){
+        airbrush(840,435,890,450,20,midColor,20,0.008);
+    }
+
+    // ── TEXTURE/SCALES overlay ──
+    for(let i=0;i<400;i++){
+        const x=280+Math.random()*550,y=250+Math.random()*350;
+        const s=1+Math.random()*3;
+        spray(x,y,s,Math.random()>0.5?'#1a0a05':'#3a2010',8,0.015);
+    }
+
+    // ── RIM LIGHTING (cool blue from behind) ──
+    for(let p=0;p<12;p++){
+        // Head rim
+        airbrush(270,245,310,240,8,'#4466aa',20,0.006);
+        // Back rim
+        airbrush(440,330,540,350,10,'#3355aa',20,0.005);
+        airbrush(550,360,700,385,10,'#3355aa',15,0.004);
+        // Tail rim
+        airbrush(700,400,850,430,8,'#3355aa',12,0.004);
+    }
+
+    // ── WARM LIGHT (from front/below) ──
+    for(let p=0;p<8;p++){
+        glow(300,280,50,warmLight,0.02);
+        glow(470,400,60,warmLight,0.015);
+        airbrush(280,270,330,260,15,warmLight,15,0.004);
+    }
+
+    // ── GROUND/SHADOW ──
+    glow(480,640,200,coolShadow,0.15);
+    glow(480,650,180,'#0a0510',0.2);
+    for(let p=0;p<10;p++){
+        airbrush(350,640,620,645,30,'#0a0510',40,0.01);
+    }
+
+    // Ground mist
+    for(let i=0;i<15;i++){
+        glow(300+Math.random()*400,630+Math.random()*30,40+Math.random()*60,'#1a1a2a',0.03);
+    }
+}
+
+function paintTitle(){
+    // Title text with airbrush glow
+    ctx.save();
+    ctx.font='bold 48px Georgia, serif';
+    ctx.textAlign='center';
+
+    // Text glow
+    glow(512,710,120,'#aa4400',0.1);
+    glow(512,710,80,'#cc6600',0.08);
+
+    // Text shadow
+    ctx.fillStyle='rgba(0,0,0,0.6)';
+    ctx.fillText('T - R E X',514,722);
+
+    // Main text
+    ctx.fillStyle='#cc8833';
+    ctx.fillText('T - R E X',512,720);
+
+    // Subtitle
+    ctx.font='12px Georgia, serif';
+    ctx.fillStyle='rgba(180,150,120,0.4)';
+    ctx.fillText('Tyrannosaurus Rex  \u2022  King of the Dinosaurs',512,745);
+
+    ctx.restore();
+}
+
+// Paint it all
+paintBackground();
+paintTRex();
+paintTitle();
+
+function saveImg(){
+    const link=document.createElement('a');
+    link.download='trex-airbrush.png';
+    link.href=c.toDataURL('image/png');
+    link.click();
+}
+</script>
+</body>
+</html>

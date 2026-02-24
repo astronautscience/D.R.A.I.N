@@ -1,0 +1,205 @@
+/* Dinosaur Ecosystem Learning Game - Theme Styles */
+/* Dark earthy base with retro and colorful accents */
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    background: #1a1a0e;
+    color: #c8b88a;
+    font-family: 'Courier New', Consolas, monospace;
+    overflow: hidden;
+    width: 100vw;
+    height: 100vh;
+}
+
+/* Main canvas */
+#gameCanvas {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+}
+
+/* Loading screen */
+#loading {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: #1a1a0e;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+
+#loading h1 {
+    font-size: 24px;
+    color: #ffcc33;
+    margin-bottom: 15px;
+}
+
+#loading p {
+    color: #c8b88a;
+    font-size: 14px;
+    animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 0.5; }
+    50% { opacity: 1; }
+}
+
+/* Info Panel - slides in from right */
+#info-panel {
+    position: fixed;
+    top: 50px;
+    right: -380px;
+    width: 360px;
+    max-height: calc(100vh - 70px);
+    background: rgba(20, 18, 12, 0.94);
+    border-left: 2px solid #66aa44;
+    border-top: 2px solid #66aa44;
+    border-bottom: 2px solid #66aa44;
+    border-radius: 8px 0 0 8px;
+    padding: 20px;
+    overflow-y: auto;
+    transition: right 0.3s ease;
+    z-index: 100;
+    /* CRT scanline effect */
+    background-image:
+        linear-gradient(rgba(20, 18, 12, 0.94) 50%, rgba(20, 18, 12, 0.94) 50%),
+        repeating-linear-gradient(
+            transparent,
+            transparent 2px,
+            rgba(0, 0, 0, 0.08) 2px,
+            rgba(0, 0, 0, 0.08) 4px
+        );
+}
+
+#info-panel.visible {
+    right: 0;
+}
+
+#info-panel h2 {
+    font-size: 18px;
+    margin-bottom: 5px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+#info-panel h3 {
+    font-size: 14px;
+    color: #ffcc33;
+    margin-top: 10px;
+    margin-bottom: 8px;
+}
+
+#info-panel p {
+    font-size: 12px;
+    line-height: 1.6;
+    margin-bottom: 4px;
+}
+
+#info-panel strong {
+    color: #c8b88a;
+}
+
+.info-divider {
+    height: 1px;
+    background: linear-gradient(to right, #66aa44, transparent);
+    margin: 10px 0;
+}
+
+.info-period {
+    color: #888870;
+    font-style: italic;
+    font-size: 11px !important;
+}
+
+.info-desc {
+    color: #a0a080;
+    font-size: 12px;
+}
+
+.facts-list {
+    list-style: none;
+    padding: 0;
+}
+
+.facts-list li {
+    font-size: 11px;
+    color: #d4c48a;
+    padding: 4px 0 4px 15px;
+    position: relative;
+    line-height: 1.5;
+}
+
+.facts-list li::before {
+    content: '*';
+    position: absolute;
+    left: 2px;
+    color: #ffcc33;
+}
+
+.info-stats {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+}
+
+.info-stats span {
+    color: #66cc66;
+}
+
+.close-btn {
+    position: absolute;
+    top: 8px;
+    right: 10px;
+    background: none;
+    border: none;
+    color: #c8b88a;
+    font-size: 22px;
+    cursor: pointer;
+    font-family: inherit;
+    padding: 5px;
+    line-height: 1;
+}
+
+.close-btn:hover {
+    color: #ffcc33;
+}
+
+/* Scrollbar styling */
+#info-panel::-webkit-scrollbar {
+    width: 6px;
+}
+
+#info-panel::-webkit-scrollbar-track {
+    background: rgba(20, 18, 12, 0.5);
+}
+
+#info-panel::-webkit-scrollbar-thumb {
+    background: #66aa44;
+    border-radius: 3px;
+}
+
+/* Responsive */
+@media (max-width: 600px) {
+    #info-panel {
+        width: 100vw;
+        right: -100vw;
+        border-radius: 0;
+        top: 40px;
+        max-height: calc(100vh - 40px);
+    }
+
+    #info-panel.visible {
+        right: 0;
+    }
+}
