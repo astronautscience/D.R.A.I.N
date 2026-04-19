@@ -165,6 +165,7 @@ import {EffectComposer} from 'three/addons/postprocessing/EffectComposer.js';
 import {RenderPass} from 'three/addons/postprocessing/RenderPass.js';
 import {UnrealBloomPass} from 'three/addons/postprocessing/UnrealBloomPass.js';
 import {ShaderPass} from 'three/addons/postprocessing/ShaderPass.js';
+import {MarchingCubes} from 'three/addons/objects/MarchingCubes.js';
 
 /* ── HELPERS ── */
 function mkS(r,mat,sc){const m=new THREE.Mesh(new THREE.SphereGeometry(r,48,36),mat);if(sc)m.scale.set(sc[0],sc[1],sc[2]);m.castShadow=true;m.receiveShadow=true;return m}
@@ -570,1255 +571,785 @@ function buildGrass(){
     mesh.instanceMatrix.needsUpdate=true;if(mesh.instanceColor)mesh.instanceColor.needsUpdate=true;return mesh;
 }
 
-/* ── DINOSAUR MODEL UTILITIES ── */
-
-function loftMesh(pts,ws,hs,mat,seg,sd){
-    seg=seg||Math.max(pts.length*3,8);
-    sd=sd||8;
-    const v3=pts.map(p=>new THREE.Vector3(p[0],p[1],p[2]));
-    const curve=new THREE.CatmullRomCurve3(v3,false,'catmullrom',0.3);
-    const pos=[],nrm=[],uv=[],idx=[];
-    let pN=null,pB=null;
-    for(let i=0;i<=seg;i++){
-        const t=i/seg;
-        const pt=curve.getPointAt(t),tan=curve.getTangentAt(t).normalize();
-        const si=Math.min(Math.floor(t*(ws.length-1)),ws.length-2);
-        const sf=t*(ws.length-1)-si;
-        const w=ws[si]*(1-sf)+ws[si+1]*sf;
-        const h=hs[si]*(1-sf)+hs[si+1]*sf;
-        let n,b;
-        if(!pN){
-            let up=new THREE.Vector3(0,1,0);
-            if(Math.abs(tan.dot(up))>0.95)up.set(0,0,1);
-            n=new THREE.Vector3().crossVectors(tan,up).normalize();
-            b=new THREE.Vector3().crossVectors(tan,n).normalize();
-        }else{
-            n=pN.clone().sub(tan.clone().multiplyScalar(tan.dot(pN)));
-            if(n.length()<0.001)n=pB.clone();
-            n.normalize();
-            b=new THREE.Vector3().crossVectors(tan,n).normalize();
-        }
-        pN=n.clone();pB=b.clone();
-        for(let j=0;j<=sd;j++){
-            const a=(j/sd)*Math.PI*2,co=Math.cos(a),si2=Math.sin(a);
-            const px=w*co,py=h*si2;
-            const nl=Math.sqrt((h*co)*(h*co)+(w*si2)*(w*si2))||1;
-            const nx2=(h*co)/nl,ny2=(w*si2)/nl;
-            pos.push(pt.x+px*n.x+py*b.x, pt.y+px*n.y+py*b.y, pt.z+px*n.z+py*b.z);
-            nrm.push(nx2*n.x+ny2*b.x, nx2*n.y+ny2*b.y, nx2*n.z+ny2*b.z);
-            uv.push(j/sd,t);
-        }
-    }
-    for(let i=0;i<seg;i++)for(let j=0;j<sd;j++){
-        const a=i*(sd+1)+j,b2=a+sd+1;
-        idx.push(a,b2,a+1,a+1,b2,b2+1);
-    }
-    // End caps
-    const capStart=ws[0]>0.01,capEnd=ws[ws.length-1]>0.01;
-    if(capStart){
-        const ci=pos.length/3;
-        const pt=curve.getPointAt(0);
-        pos.push(pt.x,pt.y,pt.z);
-        const tan=curve.getTangentAt(0).normalize();
-        nrm.push(-tan.x,-tan.y,-tan.z);
-        uv.push(0.5,0);
-        for(let j=0;j<sd;j++){
-            idx.push(ci,j+1,j);
-        }
-    }
-    if(capEnd){
-        const ci=pos.length/3;
-        const pt=curve.getPointAt(1);
-        pos.push(pt.x,pt.y,pt.z);
-        const tan=curve.getTangentAt(1).normalize();
-        nrm.push(tan.x,tan.y,tan.z);
-        uv.push(0.5,1);
-        const base=seg*(sd+1);
-        for(let j=0;j<sd;j++){
-            idx.push(ci,base+j,base+j+1);
-        }
-    }
-    const geo=new THREE.BufferGeometry();
-    geo.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));
-    geo.setAttribute('normal',new THREE.Float32BufferAttribute(nrm,3));
-    geo.setAttribute('uv',new THREE.Float32BufferAttribute(uv,2));
-    geo.setIndex(idx);
-    const mesh=new THREE.Mesh(geo,mat);
-    mesh.castShadow=true;mesh.receiveShadow=true;
-    return mesh;
-}
-
-function addEyes(grp,x,y,z,sz){
-    const ew=new THREE.MeshPhysicalMaterial({color:0xffffdd,roughness:0.08,clearcoat:1,clearcoatRoughness:0.05,envMapIntensity:3});
-    const ep=new THREE.MeshStandardMaterial({color:0x111100});
-    grp.add(P(mkS(sz,ew),x,y,z));
-    grp.add(P(mkS(sz*0.55,ep),x+sz*0.45,y,z+sz*0.3));
-    grp.add(P(mkS(sz,ew),-x,y,z));
-    grp.add(P(mkS(sz*0.55,ep),-x-sz*0.45,y,z+sz*0.3));
-}
-
-/* ── 1. BRACHIOSAURUS ── */
+/* ── DINOSAUR MODELS ── */
 function buildBrachiosaurus(){
-    const g=new THREE.Group();
-    const m=skinMat('#4cb840'),ml=skinMat('#6ad060'),nm=skinMat('#3aaa30'),dm=skinMat('#2a9020');
-    const nail=new THREE.MeshStandardMaterial({color:0xaa9980,roughness:0.5});
-    // Body
-    const body=loftMesh(
-        [[0,5.8,0.6],[0,5.2,0.8],[0,5,0],[0,4.6,-0.5],[0,4.2,-1]],
-        [1.0,1.35,1.5,1.2,0.8],
-        [0.8,1.1,1.2,1.0,0.7],
-        m,16,8
-    );
-    g.add(body);
-    // Neck
-    const neckPts=[];const neckW=[];const neckH=[];
-    const nd=[{y:0,z:0,r:0.52},{y:0.7,z:0.3,r:0.48},{y:1.4,z:0.58,r:0.44},{y:2.1,z:0.84,r:0.4},{y:2.8,z:1.06,r:0.36},{y:3.4,z:1.24,r:0.32},{y:4,z:1.38,r:0.28},{y:4.5,z:1.5,r:0.25},{y:5,z:1.58,r:0.22},{y:5.4,z:1.64,r:0.19},{y:5.8,z:1.69,r:0.17},{y:6.2,z:1.73,r:0.15}];
-    nd.forEach(s=>{neckPts.push([0,s.y,s.z]);neckW.push(s.r);neckH.push(s.r*0.9)});
+    const g=new THREE.Group(),m=skinMat('#4cb840'),ml=skinMat('#6ad060'),nm=skinMat('#3aaa30'),dm=skinMat('#2a9020'),ew=new THREE.MeshPhysicalMaterial({color:0xffffdd,roughness:.08,clearcoat:1,clearcoatRoughness:.05,envMapIntensity:3}),ep=new THREE.MeshStandardMaterial({color:0x111100}),nail=new THREE.MeshStandardMaterial({color:0xaa9980,roughness:.5});
+    // Body — 10 spheres: barrel torso with shoulder hump, ribcage, hip muscles
+    g.add(P(mkS(1.5,m,[2,1.1,1.2]),0,5,0));g.add(P(mkS(1.2,m,[1.6,1,1.15]),0,4.8,.8));
+    g.add(P(mkS(1.3,ml,[1.7,.95,1.1]),0,4.6,-.5));g.add(P(mkS(1,dm,[1.4,.8,1.1]),0,4.2,-1));
+    g.add(P(mkS(1.1,ml,[1.8,.55,1]),0,4.2,.1));g.add(P(mkS(.8,m,[1.2,1.1,.9]),0,5.8,.6));
+    g.add(P(mkS(.6,m,[1,.85,.5]),.75,4.8,0));g.add(P(mkS(.6,m,[1,.85,.5]),-.75,4.8,0));
+    g.add(P(mkS(.5,m,[.8,.9,.7]),.6,4.3,-.8));g.add(P(mkS(.5,m,[.8,.9,.7]),-.6,4.3,-.8));
+    // Neck — 12 smooth-tapered segments + muscle bulges
     const neck=new THREE.Group();
-    neck.add(loftMesh(neckPts,neckW,neckH,nm,24,8));
+    [{y:0,z:0,r:.52},{y:.7,z:.3,r:.48},{y:1.4,z:.58,r:.44},{y:2.1,z:.84,r:.4},{y:2.8,z:1.06,r:.36},{y:3.4,z:1.24,r:.32},{y:4,z:1.38,r:.28},{y:4.5,z:1.5,r:.25},{y:5,z:1.58,r:.22},{y:5.4,z:1.64,r:.19},{y:5.8,z:1.69,r:.17},{y:6.2,z:1.73,r:.15}].forEach(s=>{neck.add(P(mkS(s.r,nm,[1,.92,.88]),0,s.y,s.z))});
+    neck.add(P(mkS(.15,m,[1,.8,.6]),.2,1,.3));neck.add(P(mkS(.15,m,[1,.8,.6]),-.2,1,.3));
     neck.position.set(0,5.5,1.2);g.add(neck);
-    // Head
+    // Head — cranium, snout, nasal bump, jaw, brow ridges, cheeks, nostrils
     const head=new THREE.Group();
-    head.add(loftMesh(
-        [[0,0.12,0.06],[0,0,0.12],[0,-0.05,0.32],[0,-0.12,0.28]],
-        [0.18,0.24,0.14,0.06],
-        [0.14,0.2,0.08,0.04],
-        m,24,18
-    ));
-    addEyes(head,0.16,0.04,0.18,0.065);
+    head.add(P(mkS(.24,m,[1.4,.85,.8]),0,0,.12));head.add(P(mkS(.14,m,[1.35,.58,.62]),0,-.05,.32));
+    head.add(P(mkS(.1,m,[.9,.5,.6]),0,.12,.06));head.add(P(mkS(.06,m,[1.2,.32,.5]),0,-.12,.28));
+    head.add(P(mkS(.05,m,[1,.55,.5]),.14,.08,.14));head.add(P(mkS(.05,m,[1,.55,.5]),-.14,.08,.14));
+    head.add(P(mkS(.06,ml,[.8,.65,.6]),.16,-.02,.18));head.add(P(mkS(.06,ml,[.8,.65,.6]),-.16,-.02,.18));
+    head.add(P(mkS(.03,dm,[1,.5,.6]),.05,.14,.1));head.add(P(mkS(.03,dm,[1,.5,.6]),-.05,.14,.1));
+    head.add(P(mkS(.065,ew),.16,.04,.18));head.add(P(mkS(.035,ep),.19,.04,.22));
+    head.add(P(mkS(.065,ew),-.16,.04,.18));head.add(P(mkS(.035,ep),-.19,.04,.22));
     head.position.set(0,12.2,3.1);g.add(head);
-    // Front legs
-    function mkFL(x,z){
-        const lg=new THREE.Group();
-        lg.add(loftMesh(
-            [[0,0,0],[0.06,-0.15,0.03],[0,-1.1,0],[0,-2.1,0],[0,-3.1,0],[0,-3.9,0.02],[0,-4.05,0.03]],
-            [0.35,0.25,0.22,0.2,0.18,0.16,0.22],
-            [0.35,0.22,0.2,0.17,0.15,0.13,0.1],
-            m,42,12
-        ));
-        lg.add(P(mkCone(0.035,0.12,nail),-0.08,-4.15,0.14));
-        lg.add(P(mkCone(0.03,0.1,nail),0.08,-4.12,0.12));
-        lg.position.set(x,4.8,z);return lg;
-    }
-    function mkBL(x,z){
-        const lg=new THREE.Group();
-        lg.add(loftMesh(
-            [[0,0,0],[0.06,-0.15,0.03],[0,-0.9,0],[0,-1.7,0],[0,-2.55,0],[0,-3.2,0.02],[0,-3.35,0.03]],
-            [0.32,0.22,0.2,0.18,0.16,0.14,0.18],
-            [0.32,0.2,0.18,0.15,0.13,0.11,0.08],
-            m,42,12
-        ));
-        lg.add(P(mkCone(0.03,0.1,nail),-0.06,-3.45,0.1));
-        lg.position.set(x,4.2,z);return lg;
-    }
-    const fl=mkFL(0.9,1.4),fr=mkFL(-0.9,1.4),bl=mkBL(0.85,-1.6),br=mkBL(-0.85,-1.6);
-    g.add(fl,fr,bl,br);
-    // Tail
+    // Front legs — 9 parts: shoulder, muscle, upper, knee, lower, ankle, foot, 2 nails
+    function mkFL(x,z){const lg=new THREE.Group();lg.add(P(mkS(.35,m,[.85,1,.8]),0,0,0));lg.add(P(mkS(.25,m,[.9,.8,.7]),.08,-.2,.04));lg.add(P(mkC(.22,.18,2,m),0,-1.1,0));lg.add(P(mkS(.2,m,[.85,.65,.8]),0,-2.1,0));lg.add(P(mkC(.18,.15,1.8,m),0,-3.1,0));lg.add(P(mkS(.16,m,[.9,.5,.85]),0,-3.9,.02));lg.add(P(mkS(.22,m,[1.1,.35,1.2]),0,-4.05,.03));lg.add(P(mkCone(.035,.12,nail),-.08,-4.15,.14));lg.add(P(mkCone(.03,.1,nail),.08,-4.12,.12));lg.position.set(x,4.8,z);return lg}
+    // Back legs — 8 parts: hip, muscle, upper, knee, lower, ankle, foot, nail
+    function mkBL(x,z){const lg=new THREE.Group();lg.add(P(mkS(.32,m,[.85,1,.82]),0,0,0));lg.add(P(mkS(.22,m,[.9,.8,.7]),.06,-.15,.03));lg.add(P(mkC(.2,.16,1.6,m),0,-.9,0));lg.add(P(mkS(.18,m,[.85,.6,.8]),0,-1.7,0));lg.add(P(mkC(.16,.13,1.5,m),0,-2.55,0));lg.add(P(mkS(.14,m,[.85,.5,.82]),0,-3.2,.02));lg.add(P(mkS(.18,m,[1.1,.3,1.1]),0,-3.35,.03));lg.add(P(mkCone(.03,.1,nail),-.06,-3.45,.1));lg.position.set(x,4.2,z);return lg}
+    const fl=mkFL(.9,1.4),fr=mkFL(-.9,1.4),bl=mkBL(.85,-1.6),br=mkBL(-.85,-1.6);g.add(fl,fr,bl,br);
+    // Tail — 12 smooth-tapered segments
     const tail=new THREE.Group();
-    const tailPts=[],tailW=[],tailH=[];
-    for(let i=0;i<12;i++){
-        const t=i/11,r=0.5*(1-t*0.88);
-        tailPts.push([0,-0.06*i,-1*i]);
-        tailW.push(Math.max(0.05,r)*0.9);
-        tailH.push(Math.max(0.05,r)*0.28);
-    }
-    tail.add(loftMesh(tailPts,tailW,tailH,m,24,8));
+    for(let i=0;i<12;i++){const t=i/11,r=.5*(1-t*.88);tail.add(P(mkS(Math.max(.05,r),m,[1.8+t*.3,.55-t*.32,.5-t*.3]),0,-.06*i,-1*i))}
     tail.position.set(0,4.3,-1.3);g.add(tail);
-    // Dorsal spines
-    for(let i=0;i<14;i++){const h=0.25+Math.sin(i/13*Math.PI)*0.5;g.add(P(mkCone(0.07,h,dm),0,6.6+h*0.5,-1.5+i*0.3))}
-    g.userData={parts:{head,neck,legFL:fl,legFR:fr,legBL:bl,legBR:br,tail,body:g.children[0]},bipedal:false,labelY:14,scale:1};
-    return g;
+    g.userData={parts:{head,neck,legFL:fl,legFR:fr,legBL:bl,legBR:br,tail,body:g.children[0]},bipedal:false,labelY:14,scale:1};return g;
 }
 
-/* ── 2. STEGOSAURUS ── */
 function buildStegosaurus(){
     const g=new THREE.Group();
     const m=skinMat('#c08050'),belly=skinMat('#e0b888'),dm=skinMat('#a87040');
-    const plateMat=new THREE.MeshStandardMaterial({color:0xff6622,roughness:0.4,side:THREE.DoubleSide});
-    const spikeMat=new THREE.MeshStandardMaterial({color:0xffeeaa,roughness:0.35});
-    // Body
-    const body=loftMesh(
-        [[0,2.15,-0.7],[0,2.0,-0.3],[0,1.9,0],[0,1.9,0.5],[0,1.7,0.9]],
-        [0.8,1.1,1.3,1.1,0.7],
-        [0.7,0.9,1.0,0.85,0.6],
-        m,16,8
-    );
-    g.add(body);
-    // Belly fill
-    g.add(P(mkS(0.7,belly,[1.6,0.6,1]),0,1.1,0));
-    // Neck (not in parts)
+    const plateMat=new THREE.MeshStandardMaterial({color:0xff6622,roughness:.4,side:THREE.DoubleSide});
+    const spikeMat=new THREE.MeshStandardMaterial({color:0xffeeaa,roughness:.35});
+    const ew=new THREE.MeshPhysicalMaterial({color:0xffffdd,roughness:.08,clearcoat:1,clearcoatRoughness:.05,envMapIntensity:3}),ep=new THREE.MeshStandardMaterial({color:0x1a1a00});
+    // Body — 9 spheres: arched barrel with ribcage and hip muscles
+    g.add(P(mkS(1,m,[1.8,1,1.1]),0,1.7,0));g.add(P(mkS(.85,m,[1.5,.9,1]),0,1.9,.5));
+    g.add(P(mkS(.9,m,[1.4,1.05,1.05]),0,2,-.3));g.add(P(mkS(.7,belly,[1.6,.6,1]),0,1.1,0));
+    g.add(P(mkS(.6,m,[1.2,.85,.9]),0,2.15,-.7));g.add(P(mkS(.5,m,[1,.8,.5]),.55,1.7,0));
+    g.add(P(mkS(.5,m,[1,.8,.5]),-.55,1.7,0));g.add(P(mkS(.45,dm,[.9,.85,.7]),.45,1.9,-.5));
+    g.add(P(mkS(.45,dm,[.9,.85,.7]),-.45,1.9,-.5));
+    // Neck — 4 segments sloping downward
     const neck=new THREE.Group();
-    neck.add(loftMesh(
-        [[0,0,0.2],[0,-0.12,0.45],[0,-0.25,0.68],[0,-0.35,0.88]],
-        [0.35,0.3,0.25,0.22],
-        [0.3,0.25,0.2,0.16],
-        m,24,16
-    ));
+    neck.add(P(mkS(.35,m,[1,.85,.8]),0,0,.2));neck.add(P(mkS(.3,m,[1,.82,.76]),0,-.12,.45));
+    neck.add(P(mkS(.25,m,[1,.78,.72]),0,-.25,.68));neck.add(P(mkS(.22,m,[1,.74,.68]),0,-.35,.88));
     neck.position.set(0,1.7,1.1);g.add(neck);
-    // Head
+    // Head — tiny with beak, cheeks, jaw detail
     const head=new THREE.Group();
-    head.add(loftMesh(
-        [[0,0,0.1],[0,-0.02,0.28],[0,-0.07,0.36]],
-        [0.2,0.12,0.08],
-        [0.14,0.06,0.04],
-        m,18,18
-    ));
-    head.add(P(mkS(0.06,m,[1.1,0.35,0.45]),0,-0.1,0.25));
-    addEyes(head,0.14,0.06,0.08,0.05);
+    head.add(P(mkS(.2,m,[1.2,.7,.7]),0,0,.1));head.add(P(mkS(.12,m,[1.3,.5,.52]),0,-.02,.28));
+    head.add(P(mkS(.08,m,[1,.35,.45]),0,-.07,.36));head.add(P(mkS(.06,m,[1.1,.35,.45]),0,-.1,.25));
+    head.add(P(mkS(.04,dm,[.8,.5,.45]),.1,-.02,.12));head.add(P(mkS(.04,dm,[.8,.5,.45]),-.1,-.02,.12));
+    head.add(P(mkS(.05,ew),.14,.06,.08));head.add(P(mkS(.03,ep),.16,.06,.1));
+    head.add(P(mkS(.05,ew),-.14,.06,.08));head.add(P(mkS(.03,ep),-.16,.06,.1));
     head.position.set(0,1.1,2.1);g.add(head);
-    // Plates
-    const platePos=[{z:1.3,y:2.2,sz:0.06},{z:1.15,y:2.35,sz:0.1},{z:1,y:2.45,sz:0.14},{z:0.85,y:2.58,sz:0.18},{z:0.7,y:2.72,sz:0.24},{z:0.55,y:2.85,sz:0.28},{z:0.4,y:2.95,sz:0.32},{z:0.2,y:3.05,sz:0.35},{z:0,y:3.1,sz:0.35},{z:-0.2,y:3.05,sz:0.32},{z:-0.4,y:2.95,sz:0.28},{z:-0.6,y:2.8,sz:0.24},{z:-0.8,y:2.6,sz:0.2},{z:-1,y:2.45,sz:0.15},{z:-1.15,y:2.35,sz:0.1},{z:-1.3,y:2.25,sz:0.06}];
-    platePos.forEach((p,i)=>{const hw=p.sz*0.6,hh=p.sz*1.8;const vts=new Float32Array([0,hh,0,-hw,0,0.02,0,-hh*0.3,0,hw,0,-0.02]);const bg=new THREE.BufferGeometry();bg.setIndex([0,1,2,0,2,3]);bg.setAttribute('position',new THREE.BufferAttribute(vts,3));bg.computeVertexNormals();const plate=new THREE.Mesh(bg,plateMat);plate.position.set((i%2===0?0.06:-0.06),p.y,p.z);plate.rotation.z=(i%2===0?0.08:-0.08);g.add(plate)});
-    // Tail
+    // Plates — 16 alternating diamond shapes along spine
+    const platePos=[{z:1.3,y:2.2,sz:.06},{z:1.15,y:2.35,sz:.1},{z:1,y:2.45,sz:.14},{z:.85,y:2.58,sz:.18},{z:.7,y:2.72,sz:.24},{z:.55,y:2.85,sz:.28},{z:.4,y:2.95,sz:.32},{z:.2,y:3.05,sz:.35},{z:0,y:3.1,sz:.35},{z:-.2,y:3.05,sz:.32},{z:-.4,y:2.95,sz:.28},{z:-.6,y:2.8,sz:.24},{z:-.8,y:2.6,sz:.2},{z:-1,y:2.45,sz:.15},{z:-1.15,y:2.35,sz:.1},{z:-1.3,y:2.25,sz:.06}];
+    platePos.forEach((p,i)=>{const hw=p.sz*.6,hh=p.sz*1.8;const vts=new Float32Array([0,hh,0,-hw,0,.02,0,-hh*.3,0,hw,0,-.02]);const bg=new THREE.BufferGeometry();bg.setIndex([0,1,2,0,2,3]);bg.setAttribute('position',new THREE.BufferAttribute(vts,3));bg.computeVertexNormals();const plate=new THREE.Mesh(bg,plateMat);plate.position.set((i%2===0?.06:-.06),p.y,p.z);plate.rotation.z=(i%2===0?.08:-.08);g.add(plate)});
+    // Tail — 6 segments + 4 larger thagomizer spikes
     const tail=new THREE.Group();
-    tail.add(loftMesh(
-        [[0,0,0],[0,-0.03,-0.4],[0,-0.06,-0.8],[0,-0.1,-1.15],[0,-0.14,-1.45],[0,-0.18,-1.7]],
-        [0.42,0.35,0.28,0.22,0.16,0.1],
-        [0.25,0.2,0.14,0.1,0.06,0.04],
-        m,16,8
-    ));
-    const addSpk=(x,y,z,rx,rz,l)=>{const s=P(mkCone(0.05,l,spikeMat),x,y,z);s.rotation.x=rx;s.rotation.z=rz;tail.add(s)};
-    addSpk(0.2,0.06,-1.75,-0.6,0.4,0.6);addSpk(-0.2,0.06,-1.75,-0.6,-0.4,0.6);
-    addSpk(0.14,0.13,-1.55,-0.35,0.55,0.52);addSpk(-0.14,0.13,-1.55,-0.35,-0.55,0.52);
-    tail.position.set(0,1.8,-0.9);g.add(tail);
-    // Legs
-    function mkFL(x,z){
-        const lg=new THREE.Group();
-        lg.add(loftMesh(
-            [[0,0,0],[0,-0.22,0],[0,-0.45,0.01],[0,-0.65,0.02],[0,-0.84,0.02],[0,-0.9,0.03]],
-            [0.12,0.1,0.08,0.08,0.07,0.07],
-            [0.1,0.08,0.06,0.05,0.04,0.04],
-            m,36,12
-        ));
-        lg.add(P(mkB(0.14,0.06,0.18,m),0,-0.9,0.03));
-        lg.position.set(x,1.4,z);return lg;
-    }
-    function mkRL(x,z){
-        const lg=new THREE.Group();
-        lg.add(loftMesh(
-            [[0,-0.02,0],[0,-0.08,0.02],[0,-0.35,0],[0,-0.62,0.02],[0,-0.82,0.03],[0,-1.02,0.03],[0,-1.08,0.04]],
-            [0.2,0.16,0.12,0.09,0.09,0.08,0.08],
-            [0.17,0.14,0.1,0.07,0.07,0.06,0.06],
-            m,42,12
-        ));
-        lg.add(P(mkB(0.16,0.07,0.22,m),0,-1.08,0.04));
-        lg.position.set(x,1.6,z);return lg;
-    }
-    const fll=mkFL(0.55,0.85),flr=mkFL(-0.55,0.85),bll=mkRL(0.6,-0.7),blr=mkRL(-0.6,-0.7);
+    tail.add(P(mkS(.42,m,[1.5,.6,.55]),0,0,0));tail.add(P(mkS(.35,m,[1.5,.55,.5]),0,-.03,-.4));
+    tail.add(P(mkS(.28,m,[1.4,.5,.45]),0,-.06,-.8));tail.add(P(mkS(.22,m,[1.3,.44,.38]),0,-.1,-1.15));
+    tail.add(P(mkS(.16,m,[1.2,.38,.32]),0,-.14,-1.45));tail.add(P(mkS(.1,m,[1.15,.32,.28]),0,-.18,-1.7));
+    const addSpk=(x,y,z,rx,rz,l)=>{const s=P(mkCone(.05,l,spikeMat),x,y,z);s.rotation.x=rx;s.rotation.z=rz;tail.add(s)};
+    addSpk(.2,.06,-1.75,-.6,.4,.6);addSpk(-.2,.06,-1.75,-.6,-.4,.6);
+    addSpk(.14,.13,-1.55,-.35,.55,.52);addSpk(-.14,.13,-1.55,-.35,-.55,.52);
+    tail.position.set(0,1.8,-.9);g.add(tail);
+    // Legs — front shorter, more joint detail
+    function mkFL(x,z){const lg=new THREE.Group();lg.add(P(mkS(.12,m,[.8,.9,.75]),0,0,0));lg.add(P(mkC(.1,.08,.45,m),0,-.22,0));lg.add(P(mkS(.08,m,[.8,.55,.78]),0,-.45,.01));lg.add(P(mkC(.08,.06,.38,m),0,-.65,.02));lg.add(P(mkS(.07,dm,[.85,.45,.82]),0,-.84,.02));lg.add(P(mkB(.14,.06,.18,m),0,-.9,.03));lg.position.set(x,1.4,z);return lg}
+    function mkRL(x,z){const lg=new THREE.Group();lg.add(P(mkS(.2,m,[.72,1,.82]),0,-.02,0));lg.add(P(mkS(.16,m,[.8,.85,.7]),0,-.08,.02));lg.add(P(mkC(.12,.09,.55,m),0,-.35,0));lg.add(P(mkS(.09,m,[.82,.55,.8]),0,-.62,.02));lg.add(P(mkC(.09,.07,.42,m),0,-.82,.03));lg.add(P(mkS(.08,dm,[.85,.45,.85]),0,-1.02,.03));lg.add(P(mkB(.16,.07,.22,m),0,-1.08,.04));lg.position.set(x,1.6,z);return lg}
+    const fll=mkFL(.55,.85),flr=mkFL(-.55,.85),bll=mkRL(.6,-.7),blr=mkRL(-.6,-.7);
     g.add(fll,flr,bll,blr);
-    g.userData={parts:{head,legFL:fll,legFR:flr,legBL:bll,legBR:blr,tail,body:g.children[0]},bipedal:false,labelY:3.8,scale:1};
-    return g;
+    g.userData={parts:{head,legFL:fll,legFR:flr,legBL:bll,legBR:blr,tail,body:g.children[0]},bipedal:false,labelY:3.8,scale:1};return g;
 }
 
-/* ── 3. DIPLODOCUS ── */
 function buildDiplodocus(){
     const g=new THREE.Group();
     const m=skinMat('#5cc848'),nm=skinMat('#48b838'),belly=skinMat('#90e880'),dm=skinMat('#3a9a28');
-    const nail=new THREE.MeshStandardMaterial({color:0xaa9970,roughness:0.5});
-    // Body
-    const body=loftMesh(
-        [[0,3.2,1.2],[0,3.1,0.8],[0,3,0],[0,2.9,-0.6],[0,2.7,-1]],
-        [0.7,1.1,1.4,1.1,0.7],
-        [0.6,0.8,0.9,0.75,0.55],
-        m,16,8
-    );
-    g.add(body);
-    g.add(P(mkS(0.8,belly,[2.2,0.5,0.9]),0,2.4,0));
-    // Neck
+    const ew=new THREE.MeshPhysicalMaterial({color:0xffffdd,roughness:.08,clearcoat:1,clearcoatRoughness:.05,envMapIntensity:3}),ep=new THREE.MeshStandardMaterial({color:0x111100});
+    const nail=new THREE.MeshStandardMaterial({color:0xaa9970,roughness:.5});
+    // Body — 9 spheres: elongated barrel with ribcage and hip muscles
+    g.add(P(mkS(1.1,m,[2.4,.85,1]),0,3,0));g.add(P(mkS(.95,m,[2,.8,.95]),0,3.1,.8));
+    g.add(P(mkS(.9,m,[1.8,.8,.9]),0,2.9,-.6));g.add(P(mkS(.8,belly,[2.2,.5,.9]),0,2.4,0));
+    g.add(P(mkS(.6,m,[1.4,.7,.85]),0,3.2,1.2));g.add(P(mkS(.5,m,[1,.82,.5]),.6,3,0));
+    g.add(P(mkS(.5,m,[1,.82,.5]),-.6,3,0));g.add(P(mkS(.45,dm,[.8,.85,.65]),.5,2.8,-.8));
+    g.add(P(mkS(.45,dm,[.8,.85,.65]),-.5,2.8,-.8));
+    // Neck — 14 horizontal segments with muscle bulges (Diplodocus held neck low)
     const neck=new THREE.Group();
-    const nd=[{y:0,z:0,r:0.38},{y:0.25,z:0.55,r:0.35},{y:0.42,z:1.05,r:0.32},{y:0.52,z:1.5,r:0.29},{y:0.6,z:1.95,r:0.26},{y:0.66,z:2.35,r:0.24},{y:0.7,z:2.72,r:0.22},{y:0.73,z:3.05,r:0.2},{y:0.74,z:3.35,r:0.18},{y:0.74,z:3.62,r:0.16},{y:0.73,z:3.88,r:0.15},{y:0.71,z:4.1,r:0.14},{y:0.68,z:4.32,r:0.12},{y:0.64,z:4.52,r:0.11}];
-    const nPts=[],nW=[],nH=[];
-    nd.forEach(s=>{nPts.push([0,s.y,s.z]);nW.push(s.r);nH.push(s.r*0.88)});
-    neck.add(loftMesh(nPts,nW,nH,nm,24,8));
+    [{y:0,z:0,r:.38},{y:.25,z:.55,r:.35},{y:.42,z:1.05,r:.32},{y:.52,z:1.5,r:.29},{y:.6,z:1.95,r:.26},{y:.66,z:2.35,r:.24},{y:.7,z:2.72,r:.22},{y:.73,z:3.05,r:.2},{y:.74,z:3.35,r:.18},{y:.74,z:3.62,r:.16},{y:.73,z:3.88,r:.15},{y:.71,z:4.1,r:.14},{y:.68,z:4.32,r:.12},{y:.64,z:4.52,r:.11}].forEach(s=>{neck.add(P(mkS(s.r,nm,[1,.9,.85]),0,s.y,s.z))});
+    neck.add(P(mkS(.1,m,[1,.75,.6]),.12,.2,.5));neck.add(P(mkS(.1,m,[1,.75,.6]),-.12,.2,.5));
     neck.position.set(0,3.2,1);g.add(neck);
-    // Head
+    // Head — small pencil snout with nasal bump, cheeks, jaw
     const head=new THREE.Group();
-    head.add(loftMesh(
-        [[0,0.08,0.05],[0,0,0.08],[0,-0.02,0.22],[0,-0.08,0.22]],
-        [0.1,0.14,0.08,0.035],
-        [0.08,0.1,0.05,0.02],
-        m,24,18
-    ));
-    addEyes(head,0.11,0.04,0.06,0.05);
+    head.add(P(mkS(.14,m,[1.3,.7,.7]),0,0,.08));head.add(P(mkS(.08,m,[1.5,.48,.52]),0,-.02,.22));
+    head.add(P(mkS(.04,m,[1,.6,.6]),0,.08,.05));head.add(P(mkS(.035,m,[1.2,.32,.48]),0,-.08,.22));
+    head.add(P(mkS(.04,dm,[.8,.55,.5]),.08,-.01,.14));head.add(P(mkS(.04,dm,[.8,.55,.5]),-.08,-.01,.14));
+    head.add(P(mkS(.03,dm,[.9,.4,.5]),.03,.1,.08));head.add(P(mkS(.03,dm,[.9,.4,.5]),-.03,.1,.08));
+    head.add(P(mkS(.05,ew),.11,.04,.06));head.add(P(mkS(.03,ep),.13,.04,.09));
+    head.add(P(mkS(.05,ew),-.11,.04,.06));head.add(P(mkS(.03,ep),-.13,.04,.09));
     head.position.set(0,4,5.8);g.add(head);
-    // Legs
-    function mkLeg(x,z,h){
-        const lg=new THREE.Group();
-        lg.add(loftMesh(
-            [[0,0,0],[0.05,-0.15,0.03],[0,-h*0.25,0],[0,-h*0.48,0.01],[0,-h*0.6,0.02],[0,-h*0.78,0.02],[0,-h*0.85,0.02]],
-            [0.22,0.17,0.16,0.14,0.13,0.12,0.1],
-            [0.2,0.14,0.14,0.11,0.1,0.09,0.08],
-            m,42,12
-        ));
-        lg.add(P(mkB(0.2,0.08,0.24,m),0,-h*0.85,0.02));
-        lg.add(P(mkCone(0.025,0.08,nail),-0.06,-h*0.88,0.1));
-        lg.position.set(x,2.8,z);return lg;
-    }
-    const fl=mkLeg(0.6,1.2,2.5),fr=mkLeg(-0.6,1.2,2.5),bl=mkLeg(0.6,-1,2.5),br=mkLeg(-0.6,-1,2.5);
+    // Legs — 8 parts each: hip, muscle, upper, knee, lower, ankle, foot, nail
+    function mkLeg(x,z,h){const lg=new THREE.Group();lg.add(P(mkS(.22,m,[.72,1,.82]),0,0,0));lg.add(P(mkS(.17,m,[.85,.8,.7]),.05,-.15,.03));lg.add(P(mkC(.16,.13,h*.42,m),0,-h*.25,0));lg.add(P(mkS(.14,m,[.82,.55,.78]),0,-h*.48,.01));lg.add(P(mkC(.13,.1,h*.38,m),0,-h*.6,.02));lg.add(P(mkS(.12,m,[.8,.48,.8]),0,-h*.78,.02));lg.add(P(mkB(.2,.08,.24,m),0,-h*.85,.02));lg.add(P(mkCone(.025,.08,nail),-.06,-h*.88,.1));lg.position.set(x,2.8,z);return lg}
+    const fl=mkLeg(.6,1.2,2.5),fr=mkLeg(-.6,1.2,2.5),bl=mkLeg(.6,-1,2.5),br=mkLeg(-.6,-1,2.5);
     g.add(fl,fr,bl,br);
-    // Tail (whip)
+    // Tail — 16 whip segments (Diplodocus's famous whip tail)
     const tail=new THREE.Group();
-    const tPts=[],tW=[],tH=[];
-    for(let i=0;i<16;i++){
-        const t=i/15,r=0.38*(1-t*0.9);
-        tPts.push([0,-0.03*i*i*0.06,-0.85*i]);
-        tW.push(Math.max(0.025,r)*0.9);
-        tH.push(Math.max(0.025,r)*0.2);
-    }
-    tail.add(loftMesh(tPts,tW,tH,m,24,8));
+    for(let i=0;i<16;i++){const t=i/15,r=.38*(1-t*.9);tail.add(P(mkS(Math.max(.025,r),m,[1.8+t*.6,.4-t*.22,.38-t*.22]),0,-.03*i*i*.06,-.85*i))}
     tail.position.set(0,2.9,-1.2);g.add(tail);
-    g.userData={parts:{head,neck,legFL:fl,legFR:fr,legBL:bl,legBR:br,tail,body:g.children[0]},bipedal:false,labelY:5.5,scale:1};
-    return g;
+    g.userData={parts:{head,neck,legFL:fl,legFR:fr,legBL:bl,legBR:br,tail,body:g.children[0]},bipedal:false,labelY:5.5,scale:1};return g;
 }
 
-/* ── 4. COMPSOGNATHUS ── */
 function buildCompsognathus(){
     const g=new THREE.Group();
     const m=skinMat('#ff9922'),belly=skinMat('#ffcc55'),dm=skinMat('#cc7711');
-    const ew=new THREE.MeshStandardMaterial({color:0xffff44,roughness:0.2}),ep=new THREE.MeshStandardMaterial({color:0x110800});
-    const clawMat=new THREE.MeshStandardMaterial({color:0x4a3510,roughness:0.4});
-    // Body
-    const body=loftMesh(
-        [[0,0.46,0.16],[0,0.44,0.1],[0,0.42,0],[0,0.38,-0.05],[0,0.35,-0.08]],
-        [0.06,0.1,0.14,0.1,0.06],
-        [0.05,0.08,0.1,0.07,0.05],
-        m,16,8
-    );
-    g.add(body);
-    g.add(P(mkS(0.1,belly,[1.4,0.5,0.6]),0,0.35,0));
-    // Neck
-    const neckG=new THREE.Group();
-    neckG.add(loftMesh(
-        [[0,0,0.04],[0,0.05,0.08],[0,0.09,0.11],[0,0.12,0.13]],
-        [0.06,0.052,0.045,0.04],
-        [0.054,0.045,0.038,0.033],
-        m,24,16
-    ));
-    neckG.position.set(0,0.5,0.15);g.add(neckG);
-    // Head
+    const ew=new THREE.MeshStandardMaterial({color:0xffff44,roughness:.2}),ep=new THREE.MeshStandardMaterial({color:0x110800});
+    const clawMat=new THREE.MeshStandardMaterial({color:0x4a3510,roughness:.4});
+    // Body — 7 spheres: sleek bird-like with shoulder/hip detail
+    g.add(P(mkS(.16,m,[1.5,.85,.7]),0,.42,0));g.add(P(mkS(.12,m,[1.3,.75,.65]),0,.44,.1));
+    g.add(P(mkS(.1,belly,[1.4,.5,.6]),0,.35,0));g.add(P(mkS(.08,m,[1.1,.7,.55]),0,.46,.16));
+    g.add(P(mkS(.06,m,[.7,.75,.5]),.06,.42,.08));g.add(P(mkS(.06,m,[.7,.75,.5]),-.06,.42,.08));
+    g.add(P(mkS(.07,dm,[.8,.8,.6]),.05,.38,-.05));
+    // Neck — 4 S-curved segments
+    const neck=new THREE.Group();
+    neck.add(P(mkS(.06,m,[.85,.9,.8]),0,0,.04));neck.add(P(mkS(.052,m,[.82,.87,.76]),0,.05,.08));
+    neck.add(P(mkS(.045,m,[.78,.84,.72]),0,.09,.11));neck.add(P(mkS(.04,m,[.75,.8,.68]),0,.12,.13));
+    neck.position.set(0,.5,.15);g.add(neck);
+    // Head — detailed: cranium, snout, jaw, brow, cheeks
     const head=new THREE.Group();
-    head.add(loftMesh(
-        [[0,0.02,0.06],[0,-0.01,0.16],[0,-0.03,0.2]],
-        [0.08,0.04,0.025],
-        [0.06,0.03,0.015],
-        m,18,18
-    ));
-    head.add(P(mkS(0.02,dm,[1.1,0.28,0.38]),0,-0.04,0.15));
-    head.add(P(mkS(0.035,ew),0.06,0.04,0.05));head.add(P(mkS(0.02,ep),0.07,0.04,0.07));
-    head.add(P(mkS(0.035,ew),-0.06,0.04,0.05));head.add(P(mkS(0.02,ep),-0.07,0.04,0.07));
-    head.position.set(0,0.62,0.28);g.add(head);
-    // Legs
-    function mkLeg(x){
-        const lg=new THREE.Group();
-        lg.add(loftMesh(
-            [[0,0,0],[0.01,-0.02,0.01],[0,-0.08,0],[0,-0.14,0.005],[0,-0.18,0.015],[0,-0.24,0.018],[0,-0.27,0.02]],
-            [0.04,0.03,0.025,0.018,0.02,0.014,0.015],
-            [0.035,0.025,0.022,0.015,0.016,0.012,0.012],
-            m,42,12
-        ));
-        lg.add(P(mkC(0.008,0.005,0.045,m),-0.012,-0.31,0.03));
-        lg.add(P(mkC(0.008,0.005,0.05,m),0,-0.315,0.035));
-        lg.add(P(mkC(0.008,0.005,0.045,m),0.012,-0.31,0.03));
-        lg.add(P(mkCone(0.005,0.02,clawMat),0,-0.335,0.055));
-        lg.position.set(x,0.35,-0.02);return lg;
-    }
-    const ll=mkLeg(0.065),lr=mkLeg(-0.065);g.add(ll,lr);
-    // Arms
+    head.add(P(mkS(.08,m,[1.3,.8,.7]),0,.02,.06));head.add(P(mkS(.04,m,[1.5,.5,.45]),0,-.01,.16));
+    head.add(P(mkS(.025,m,[1.2,.3,.4]),0,-.03,.2));head.add(P(mkS(.02,m,[1.1,.28,.38]),0,-.04,.15));
+    head.add(P(mkS(.02,dm,[.85,.55,.5]),.04,.01,.06));head.add(P(mkS(.02,dm,[.85,.55,.5]),-.04,.01,.06));
+    head.add(P(mkS(.035,ew),.06,.04,.05));head.add(P(mkS(.02,ep),.07,.04,.07));
+    head.add(P(mkS(.035,ew),-.06,.04,.05));head.add(P(mkS(.02,ep),-.07,.04,.07));
+    head.position.set(0,.62,.28);g.add(head);
+    // Legs — 10 parts: hip, thigh muscle, upper, knee, shin, ankle, metatarsal, 3 toes
+    function mkLeg(x){const lg=new THREE.Group();lg.add(P(mkS(.04,m,[.7,1.1,.8]),0,0,0));lg.add(P(mkS(.03,m,[.75,.8,.65]),.01,-.02,.01));lg.add(P(mkC(.025,.02,.12,m),0,-.08,0));lg.add(P(mkS(.018,m,[.78,.55,.75]),0,-.14,.005));lg.add(P(mkC(.02,.015,.1,m),0,-.18,.015));lg.add(P(mkS(.014,m,[.75,.48,.72]),0,-.24,.018));lg.add(P(mkC(.015,.012,.06,m),0,-.27,.02));lg.add(P(mkC(.008,.005,.045,m),-.012,-.31,.03));lg.add(P(mkC(.008,.005,.05,m),0,-.315,.035));lg.add(P(mkC(.008,.005,.045,m),.012,-.31,.03));lg.add(P(mkCone(.005,.02,clawMat),0,-.335,.055));lg.position.set(x,.35,-.02);return lg}
+    const ll=mkLeg(.065),lr=mkLeg(-.065);g.add(ll,lr);
+    // Arms — 5 parts: shoulder, upper, elbow, forearm, 2 claws
     const armL=new THREE.Group();
-    armL.add(P(mkS(0.012,m,[0.8,0.7,0.6]),0,0,0));
-    armL.add(P(mkC(0.012,0.008,0.06,m),0,-0.03,0));
-    armL.add(P(mkS(0.008,m,[0.75,0.55,0.7]),0,-0.055,0.005));
-    armL.add(P(mkC(0.008,0.005,0.04,m),0,-0.07,0.01));
-    armL.add(P(mkCone(0.004,0.018,clawMat),0,-0.09,0.015));
-    armL.add(P(mkCone(0.003,0.015,clawMat),0.005,-0.088,0.012));
-    armL.position.set(0.08,0.44,0.12);g.add(armL);
-    const armR=armL.clone();armR.position.x=-0.08;g.add(armR);
-    // Tail
+    armL.add(P(mkS(.012,m,[.8,.7,.6]),0,0,0));armL.add(P(mkC(.012,.008,.06,m),0,-.03,0));
+    armL.add(P(mkS(.008,m,[.75,.55,.7]),0,-.055,.005));armL.add(P(mkC(.008,.005,.04,m),0,-.07,.01));
+    armL.add(P(mkCone(.004,.018,clawMat),0,-.09,.015));armL.add(P(mkCone(.003,.015,clawMat),.005,-.088,.012));
+    armL.position.set(.08,.44,.12);g.add(armL);
+    const armR=armL.clone();armR.position.x=-.08;g.add(armR);
+    // Tail — 9 stiff segments
     const tail=new THREE.Group();
-    const tPts=[],tW=[],tH=[];
-    for(let i=0;i<9;i++){
-        const t=i/8,r=0.055*(1-t*0.78);
-        tPts.push([0,-0.004*i,-0.16*i]);
-        tW.push(Math.max(0.008,r)*0.8);
-        tH.push(Math.max(0.008,r)*0.18);
-    }
-    tail.add(loftMesh(tPts,tW,tH,m,20,8));
-    tail.position.set(0,0.4,-0.14);g.add(tail);
-    g.userData={parts:{head,legL:ll,legR:lr,tail,body:g.children[0]},bipedal:true,labelY:1,scale:0.3};
-    return g;
+    for(let i=0;i<9;i++){const t=i/8,r=.055*(1-t*.78);tail.add(P(mkS(Math.max(.008,r),m,[2.2+t*.5,.35-t*.14,.3-t*.12]),0,-.004*i,-.16*i))}
+    tail.position.set(0,.4,-.14);g.add(tail);
+    g.userData={parts:{head,legL:ll,legR:lr,tail,body:g.children[0]},bipedal:true,labelY:1,scale:.3};return g;
 }
 
-/* ── 5. ARCHAEOPTERYX ── */
 function buildArchaeopteryx(){
     const g=new THREE.Group();
     const m=skinMat('#22bbaa'),dm=skinMat('#1a8877');
-    const fm=new THREE.MeshStandardMaterial({color:0x33ddbb,side:THREE.DoubleSide,roughness:0.5});
-    const primFm=new THREE.MeshStandardMaterial({color:0x1a9988,side:THREE.DoubleSide,roughness:0.55});
-    const ew=new THREE.MeshStandardMaterial({color:0xffee88,roughness:0.2}),ep=new THREE.MeshStandardMaterial({color:0x110800});
-    const claw=new THREE.MeshStandardMaterial({color:0x2a1a10,roughness:0.5});
-    // Body
-    const body=loftMesh(
-        [[0,0.36,0.12],[0,0.35,0.04],[0,0.35,0],[0,0.33,-0.08]],
-        [0.06,0.1,0.12,0.07],
-        [0.05,0.07,0.085,0.055],
-        m,16,8
-    );
-    g.add(body);
-    // Head (includes S-curved neck sections)
+    const fm=new THREE.MeshStandardMaterial({color:0x33ddbb,side:THREE.DoubleSide,roughness:.5});
+    const primFm=new THREE.MeshStandardMaterial({color:0x1a9988,side:THREE.DoubleSide,roughness:.55});
+    const ew=new THREE.MeshStandardMaterial({color:0xffee88,roughness:.2}),ep=new THREE.MeshStandardMaterial({color:0x110800});
+    const claw=new THREE.MeshStandardMaterial({color:0x2a1a10,roughness:.5});
+    // Body — 6 spheres: elongated bird-like with keel and shoulder detail
+    g.add(P(mkS(.15,m,[1.4,.85,.68]),0,.35,0));g.add(P(mkS(.12,m,[1.1,.7,.55]),0,.32,.02));
+    g.add(P(mkS(.08,m,[1.2,.65,.5]),0,.36,.12));g.add(P(mkS(.06,dm,[.7,.6,.5]),.06,.35,.04));
+    g.add(P(mkS(.06,dm,[.7,.6,.5]),-.06,.35,.04));g.add(P(mkS(.07,m,[1,.55,.48]),0,.33,-.08));
+    // Head — toothed reptilian head with S-curved neck, more detail
     const head=new THREE.Group();
-    head.add(loftMesh(
-        [[0,0.02,0.08],[0,-0.005,0.17],[0,-0.04,0.2]],
-        [0.07,0.04,0.025],
-        [0.056,0.026,0.014],
-        m,18,18
-    ));
-    head.add(P(mkS(0.025,m,[1.4,0.35,0.4]),0,-0.04,0.2));
-    head.add(P(mkB(0.04,0.005,0.02,new THREE.MeshStandardMaterial({color:0xddddbb,roughness:0.4})),0,-0.025,0.2));
-    head.add(P(mkS(0.032,ew),0.055,0.04,0.07));head.add(P(mkS(0.018,ep),0.06,0.04,0.09));
-    head.add(P(mkS(0.032,ew),-0.055,0.04,0.07));head.add(P(mkS(0.018,ep),-0.06,0.04,0.09));
-    // S-curved neck sections in head group
-    head.add(P(mkS(0.04,m,[0.9,0.9,0.8]),0,-0.06,-0.04));
-    head.add(P(mkS(0.035,m,[0.85,0.85,0.75]),0,-0.1,-0.08));
-    head.position.set(0,0.48,0.18);g.add(head);
-    // Wings
+    head.add(P(mkS(.07,m,[1.3,.8,.72]),0,.02,.08));head.add(P(mkS(.04,m,[1.8,.52,.44]),0,-.005,.17));
+    head.add(P(mkS(.025,m,[1.4,.35,.4]),0,-.04,.2));head.add(P(mkS(.02,dm,[1.1,.3,.38]),0,-.05,.14));
+    head.add(P(mkS(.015,dm,[.8,.5,.45]),.04,.01,.08));head.add(P(mkS(.015,dm,[.8,.5,.45]),-.04,.01,.08));
+    head.add(P(mkB(.04,.005,.02,new THREE.MeshStandardMaterial({color:0xddddbb,roughness:.4})),0,-.025,.2));
+    head.add(P(mkS(.032,ew),.055,.04,.07));head.add(P(mkS(.018,ep),.06,.04,.09));
+    head.add(P(mkS(.032,ew),-.055,.04,.07));head.add(P(mkS(.018,ep),-.06,.04,.09));
+    head.add(P(mkS(.04,m,[.9,.9,.8]),0,-.06,-.04));head.add(P(mkS(.035,m,[.85,.85,.75]),0,-.1,-.08));
+    head.position.set(0,.48,.18);g.add(head);
+    // Wings — 7 primaries, 5 secondaries, 3 claws each
     const wl=new THREE.Group();
-    wl.add(P(mkC(0.014,0.012,0.08,m),0,0,0.02));wl.add(P(mkS(0.01,m,[0.8,0.6,0.7]),0.04,-0.005,0.015));
-    wl.add(P(mkC(0.011,0.009,0.1,m),0.08,-0.01,0.01));wl.add(P(mkS(0.008,m,[0.75,0.55,0.65]),0.14,-0.015,0.008));
-    for(let i=0;i<7;i++){const f=P(mkB(0.09+i*0.018,0.003,0.028+i*0.004,primFm),0.1+i*0.05,-0.01-0.008*i,0.01);f.rotation.z=-0.08*i;wl.add(f)}
-    for(let i=0;i<5;i++){wl.add(P(mkB(0.06+i*0.005,0.003,0.032,fm),0.02+i*0.035,0.005,0.01))}
-    for(let i=0;i<3;i++){const c=P(mkCone(0.004,0.022,claw),0.02+i*0.016,0.015,0.04+i*0.01);c.rotation.x=-0.4;wl.add(c)}
-    wl.position.set(0.1,0.35,0.02);g.add(wl);
+    wl.add(P(mkC(.014,.012,.08,m),0,0,.02));wl.add(P(mkS(.01,m,[.8,.6,.7]),.04,-.005,.015));
+    wl.add(P(mkC(.011,.009,.1,m),.08,-.01,.01));wl.add(P(mkS(.008,m,[.75,.55,.65]),.14,-.015,.008));
+    for(let i=0;i<7;i++){const f=P(mkB(.09+i*.018,.003,.028+i*.004,primFm),.1+i*.05,-.01-.008*i,.01);f.rotation.z=-.08*i;wl.add(f)}
+    for(let i=0;i<5;i++){const f=P(mkB(.06+i*.005,.003,.032,fm),.02+i*.035,.005,.01);wl.add(f)}
+    for(let i=0;i<3;i++){const c=P(mkCone(.004,.022,claw),.02+i*.016,.015,.04+i*.01);c.rotation.x=-.4;wl.add(c)}
+    wl.position.set(.1,.35,.02);g.add(wl);
     const wr=new THREE.Group();
-    wr.add(P(mkC(0.014,0.012,0.08,m),0,0,0.02));wr.add(P(mkS(0.01,m,[0.8,0.6,0.7]),-0.04,-0.005,0.015));
-    wr.add(P(mkC(0.011,0.009,0.1,m),-0.08,-0.01,0.01));wr.add(P(mkS(0.008,m,[0.75,0.55,0.65]),-0.14,-0.015,0.008));
-    for(let i=0;i<7;i++){const f=P(mkB(0.09+i*0.018,0.003,0.028+i*0.004,primFm),-0.1-i*0.05,-0.01-0.008*i,0.01);f.rotation.z=0.08*i;wr.add(f)}
-    for(let i=0;i<5;i++){wr.add(P(mkB(0.06+i*0.005,0.003,0.032,fm),-0.02-i*0.035,0.005,0.01))}
-    for(let i=0;i<3;i++){const c=P(mkCone(0.004,0.022,claw),-0.02-i*0.016,0.015,0.04+i*0.01);c.rotation.x=-0.4;wr.add(c)}
-    wr.position.set(-0.1,0.35,0.02);g.add(wr);
-    // Legs
+    wr.add(P(mkC(.014,.012,.08,m),0,0,.02));wr.add(P(mkS(.01,m,[.8,.6,.7]),-.04,-.005,.015));
+    wr.add(P(mkC(.011,.009,.1,m),-.08,-.01,.01));wr.add(P(mkS(.008,m,[.75,.55,.65]),-.14,-.015,.008));
+    for(let i=0;i<7;i++){const f=P(mkB(.09+i*.018,.003,.028+i*.004,primFm),-.1-i*.05,-.01-.008*i,.01);f.rotation.z=.08*i;wr.add(f)}
+    for(let i=0;i<5;i++){const f=P(mkB(.06+i*.005,.003,.032,fm),-.02-i*.035,.005,.01);wr.add(f)}
+    for(let i=0;i<3;i++){const c=P(mkCone(.004,.022,claw),-.02-i*.016,.015,.04+i*.01);c.rotation.x=-.4;wr.add(c)}
+    wr.position.set(-.1,.35,.02);g.add(wr);
+    // Legs — 10 parts: hip, thigh, knee, shin, ankle, metatarsal, 3 toes, hallux
     const ll=new THREE.Group();
-    ll.add(loftMesh(
-        [[0,0,0],[0,-0.06,0],[0,-0.12,0.008],[0,-0.17,0.015],[0,-0.22,0.02],[0,-0.24,0.025]],
-        [0.015,0.018,0.012,0.012,0.008,0.008],
-        [0.012,0.014,0.01,0.01,0.007,0.007],
-        m,36,12
-    ));
-    ll.add(P(mkCone(0.004,0.03,claw),-0.01,-0.26,0.05));
-    ll.add(P(mkCone(0.004,0.035,claw),0,-0.265,0.06));
-    ll.add(P(mkCone(0.004,0.03,claw),0.01,-0.26,0.05));
-    const hx=P(mkCone(0.003,0.02,claw),0,-0.25,-0.01);hx.rotation.x=2.5;ll.add(hx);
-    ll.position.set(0.06,0.28,-0.02);g.add(ll);
-    const lr=ll.clone();lr.position.x=-0.06;g.add(lr);
-    // Tail
+    ll.add(P(mkS(.015,m,[.75,.8,.7]),0,0,0));ll.add(P(mkC(.018,.014,.12,m),0,-.06,0));
+    ll.add(P(mkS(.012,m,[.8,.55,.75]),0,-.12,.008));ll.add(P(mkC(.012,.01,.1,m),0,-.17,.015));
+    ll.add(P(mkS(.008,m,[1,.55,1.1]),0,-.22,.02));ll.add(P(mkC(.008,.007,.04,m),0,-.24,.025));
+    ll.add(P(mkCone(.004,.03,claw),-.01,-.26,.05));ll.add(P(mkCone(.004,.035,claw),0,-.265,.06));
+    ll.add(P(mkCone(.004,.03,claw),.01,-.26,.05));const hx=P(mkCone(.003,.02,claw),0,-.25,-.01);hx.rotation.x=2.5;ll.add(hx);
+    ll.position.set(.06,.28,-.02);g.add(ll);
+    const lr=ll.clone();lr.position.x=-.06;g.add(lr);
+    // Tail — 8 bony segments with 7 paired feather fans
     const tail=new THREE.Group();
-    const tPts=[],tW=[],tH=[];
-    for(let i=0;i<8;i++){tPts.push([0,-0.004*i,-0.055*i]);tW.push(0.013-i*0.001);tH.push((0.013-i*0.001)*0.5)}
-    tail.add(loftMesh(tPts,tW,tH,m,18,8));
+    for(let i=0;i<8;i++){tail.add(P(mkS(.013-i*.001,m,[1.5,.5,.45]),0,-.004*i,-.055*i))}
     for(let i=0;i<7;i++){
-        const f1=P(mkB(0.035+i*0.01,0.002,0.018+i*0.003,fm),0.015,0,-0.06-i*0.055);f1.rotation.z=-0.15;tail.add(f1);
-        const f2=P(mkB(0.035+i*0.01,0.002,0.018+i*0.003,fm),-0.015,0,-0.06-i*0.055);f2.rotation.z=0.15;tail.add(f2);
+        const f1=P(mkB(.035+i*.01,.002,.018+i*.003,fm),.015,0,-.06-i*.055);f1.rotation.z=-.15;tail.add(f1);
+        const f2=P(mkB(.035+i*.01,.002,.018+i*.003,fm),-.015,0,-.06-i*.055);f2.rotation.z=.15;tail.add(f2);
     }
-    tail.position.set(0,0.34,-0.13);g.add(tail);
-    g.userData={parts:{head,wingL:wl,wingR:wr,legL:ll,legR:lr,tail,body:g.children[0]},bipedal:true,labelY:0.9,scale:0.25};
-    return g;
+    tail.position.set(0,.34,-.13);g.add(tail);
+    g.userData={parts:{head,wingL:wl,wingR:wr,legL:ll,legR:lr,tail,body:g.children[0]},bipedal:true,labelY:.9,scale:.25};return g;
 }
 
-/* ── 6. ALLOSAURUS ── */
 function buildAllosaurus(){
     const g=new THREE.Group();
     const m=skinMat('#cc2211'),ml=skinMat('#ee5544'),dm=skinMat('#991a0e');
-    const ew=new THREE.MeshStandardMaterial({color:0xffdd22,roughness:0.2}),ep=new THREE.MeshStandardMaterial({color:0x110800});
-    const teeth=new THREE.MeshPhysicalMaterial({color:0xfff8ee,roughness:0.15,clearcoat:0.8,clearcoatRoughness:0.1,sheen:0.2,sheenRoughness:0.3,sheenColor:new THREE.Color(0xffffee)});
-    const claw=new THREE.MeshStandardMaterial({color:0x2a1a10,roughness:0.5});
-    // Body
-    const body=loftMesh(
-        [[0,2.7,0.55],[0,2.6,0.3],[0,2.4,0],[0,2.1,-0.1],[0,1.95,0.05]],
-        [0.55,0.7,0.9,0.65,0.5],
-        [0.55,0.75,0.95,0.7,0.55],
-        m,16,8
-    );
-    g.add(body);
-    g.add(P(mkS(0.4,ml,[1.5,0.5,0.72]),0,1.7,0));
-    // Neck
+    const ew=new THREE.MeshStandardMaterial({color:0xffdd22,roughness:.2}),ep=new THREE.MeshStandardMaterial({color:0x110800});
+    const teeth=new THREE.MeshPhysicalMaterial({color:0xfff8ee,roughness:.15,clearcoat:0.8,clearcoatRoughness:.1,sheen:0.2,sheenRoughness:0.3,sheenColor:new THREE.Color(0xffffee)});
+    const claw=new THREE.MeshStandardMaterial({color:0x2a1a10,roughness:.5});
+    // Body — 9 spheres: deep ribcage with shoulder/hip muscles
+    g.add(P(mkS(.9,m,[1.7,1.1,.85]),0,2.4,0));g.add(P(mkS(.75,ml,[1.4,.9,.75]),0,1.95,.05));
+    g.add(P(mkS(.5,m,[1.2,.85,.7]),0,2.6,.3));g.add(P(mkS(.3,m,[1,.9,.8]),.35,2.1,-.1));
+    g.add(P(mkS(.3,m,[1,.9,.8]),-.35,2.1,-.1));g.add(P(mkS(.22,m,[.9,.8,.7]),.3,2.55,.4));
+    g.add(P(mkS(.22,m,[.9,.8,.7]),-.3,2.55,.4));g.add(P(mkS(.4,ml,[1.5,.5,.72]),0,1.7,0));
+    g.add(P(mkS(.35,dm,[1.1,.75,.6]),0,2.7,.55));
+    // Neck — 4 thick muscular S-curve segments
     const neck=new THREE.Group();
-    neck.add(loftMesh(
-        [[0,0,0],[0,0.25,0.1],[0,0.48,0.2],[0,0.68,0.3]],
-        [0.28,0.25,0.22,0.2],
-        [0.24,0.22,0.2,0.17],
-        m,24,16
-    ));
-    neck.position.set(0,2.7,0.6);g.add(neck);
-    // Head
+    neck.add(P(mkS(.28,m,[1,.95,.8]),0,0,0));neck.add(P(mkS(.25,m,[1,.92,.77]),0,.25,.1));
+    neck.add(P(mkS(.22,m,[.98,.88,.74]),0,.48,.2));neck.add(P(mkS(.2,m,[.95,.85,.7]),0,.68,.3));
+    neck.position.set(0,2.7,.6);g.add(neck);
+    // Head — 16 parts: cranium, jaw, snout, muscles, crests, nostrils, teeth, eyes
     const head=new THREE.Group();
-    head.add(loftMesh(
-        [[0,0.05,0.35],[0,-0.08,0.6],[0,-0.15,0.75],[0,-0.08,0.82]],
-        [0.35,0.28,0.15,0.1],
-        [0.25,0.18,0.12,0.08],
-        m,24,18
-    ));
-    // Jaw
-    head.add(P(mkS(0.22,m,[1.3,0.45,0.6]),0,-0.2,0.55));
-    // Jaw muscles
-    head.add(P(mkS(0.14,m,[0.8,1,0.7]),0.2,0.0,0.3));head.add(P(mkS(0.14,m,[0.8,1,0.7]),-0.2,0.0,0.3));
-    // Brow ridges
-    head.add(P(mkS(0.06,m,[1.5,0.65,0.85]),0.2,0.22,0.4));head.add(P(mkS(0.06,m,[1.5,0.65,0.85]),-0.2,0.22,0.4));
-    // Nostrils
-    head.add(P(mkS(0.03,new THREE.MeshStandardMaterial({color:0x1a0a05,roughness:0.8})),0.08,0.02,0.8));
-    head.add(P(mkS(0.03,new THREE.MeshStandardMaterial({color:0x1a0a05,roughness:0.8})),-0.08,0.02,0.8));
-    // Teeth
-    for(let i=0;i<8;i++){const t=P(mkCone(0.011,0.055+Math.sin(i*0.4)*0.015,teeth),0.13-0.03*Math.abs(i-3.5),-0.22,0.42+i*0.055);t.rotation.x=Math.PI;head.add(t)}
-    for(let i=0;i<8;i++){const t=P(mkCone(0.009,0.045+Math.sin(i*0.4)*0.01,teeth),0.13-0.03*Math.abs(i-3.5),-0.13,0.42+i*0.055);head.add(t)}
-    // Eyes
-    head.add(P(mkS(0.065,ew),0.24,0.12,0.42));head.add(P(mkS(0.035,ep),0.27,0.12,0.46));
-    head.add(P(mkS(0.065,ew),-0.24,0.12,0.42));head.add(P(mkS(0.035,ep),-0.27,0.12,0.46));
+    head.add(P(mkS(.35,m,[1.5,.88,.78]),0,.05,.35));head.add(P(mkS(.28,m,[1.4,.6,.7]),0,-.08,.6));
+    head.add(P(mkS(.22,m,[1.3,.45,.6]),0,-.2,.55));head.add(P(mkS(.15,m,[1.3,.5,.55]),0,-.15,.75));
+    head.add(P(mkS(.1,dm,[1.2,.42,.5]),0,-.08,.82));
+    head.add(P(mkS(.14,m,[.8,1,.7]),.2,.0,.3));head.add(P(mkS(.14,m,[.8,1,.7]),-.2,.0,.3));
+    head.add(P(mkS(.06,m,[1.5,.65,.85]),.2,.22,.4));head.add(P(mkS(.06,m,[1.5,.65,.85]),-.2,.22,.4));
+    head.add(P(mkS(.04,dm,[1.2,.5,.6]),.18,.16,.45));head.add(P(mkS(.04,dm,[1.2,.5,.6]),-.18,.16,.45));
+    head.add(P(mkS(.03,new THREE.MeshStandardMaterial({color:0x1a0a05,roughness:.8})),.08,.02,.8));
+    head.add(P(mkS(.03,new THREE.MeshStandardMaterial({color:0x1a0a05,roughness:.8})),-.08,.02,.8));
+    for(let i=0;i<8;i++){const t=P(mkCone(.011,.055+Math.sin(i*.4)*.015,teeth),.13-.03*Math.abs(i-3.5),-.22,.42+i*.055);t.rotation.x=Math.PI;head.add(t)}
+    for(let i=0;i<8;i++){const t=P(mkCone(.009,.045+Math.sin(i*.4)*.01,teeth),.13-.03*Math.abs(i-3.5),-.13,.42+i*.055);head.add(t)}
+    head.add(P(mkS(.065,ew),.24,.12,.42));head.add(P(mkS(.035,ep),.27,.12,.46));
+    head.add(P(mkS(.065,ew),-.24,.12,.42));head.add(P(mkS(.035,ep),-.27,.12,.46));
     head.position.set(0,3.5,1.1);g.add(head);
-    // Arms
+    // Arms — 8 parts each: shoulder, upper, elbow, forearm, wrist, 3 claws
     const al=new THREE.Group();
-    al.add(P(mkS(0.04,m,[0.85,0.8,0.7]),0,0,0));
-    al.add(P(mkC(0.045,0.035,0.28,m),0,-0.14,0));
-    al.add(P(mkS(0.035,m,[0.9,0.7,0.8]),0,-0.28,0));
-    al.add(P(mkC(0.035,0.025,0.25,m),0,-0.42,0.04));
-    al.add(P(mkS(0.025,m,[0.85,0.6,0.75]),0,-0.54,0.06));
-    al.add(P(mkCone(0.009,0.065,claw),0.02,-0.58,0.08));
-    al.add(P(mkCone(0.009,0.075,claw),0,-0.6,0.1));
-    al.add(P(mkCone(0.008,0.055,claw),-0.02,-0.57,0.08));
-    al.position.set(0.35,2.7,0.65);al.rotation.x=-0.4;g.add(al);
-    const ar=al.clone();ar.position.set(-0.35,2.7,0.65);ar.rotation.x=-0.4;g.add(ar);
-    // Legs
+    al.add(P(mkS(.04,m,[.85,.8,.7]),0,0,0));al.add(P(mkC(.045,.035,.28,m),0,-.14,0));
+    al.add(P(mkS(.035,m,[.9,.7,.8]),0,-.28,0));al.add(P(mkC(.035,.025,.25,m),0,-.42,.04));
+    al.add(P(mkS(.025,m,[.85,.6,.75]),0,-.54,.06));
+    al.add(P(mkCone(.009,.065,claw),.02,-.58,.08));al.add(P(mkCone(.009,.075,claw),0,-.6,.1));al.add(P(mkCone(.008,.055,claw),-.02,-.57,.08));
+    al.position.set(.35,2.7,.65);al.rotation.x=-.4;g.add(al);
+    const ar=al.clone();ar.position.set(-.35,2.7,.65);ar.rotation.x=-.4;g.add(ar);
+    // Legs — 11 parts: hip, thigh muscle, upper, knee, shin, calf, ankle, metatarsal, 3 toes
     const ll=new THREE.Group();
-    ll.add(loftMesh(
-        [[0,0,0],[0.05,-0.15,0.02],[0,-0.5,0],[0,-0.95,0.02],[0,-1.4,0.08],[0,-1.85,0.12],[0,-1.95,0.18]],
-        [0.22,0.16,0.14,0.1,0.1,0.08,0.1],
-        [0.2,0.14,0.12,0.09,0.08,0.07,0.08],
-        m,42,12
-    ));
-    ll.add(P(mkCone(0.013,0.09,claw),-0.06,-2.05,0.3));
-    ll.add(P(mkCone(0.013,0.1,claw),0,-2.08,0.35));
-    ll.add(P(mkCone(0.013,0.09,claw),0.06,-2.05,0.3));
-    ll.position.set(0.45,2.1,-0.1);g.add(ll);
-    const lr=ll.clone();lr.position.x=-0.45;g.add(lr);
-    // Tail
+    ll.add(P(mkS(.22,m,[.8,1.1,.75]),0,0,0));ll.add(P(mkS(.16,m,[.85,.85,.68]),.05,-.15,.02));
+    ll.add(P(mkC(.14,.1,.85,m),0,-.5,0));ll.add(P(mkS(.1,m,[.9,.7,.8]),0,-.95,.02));
+    ll.add(P(mkC(.1,.07,.9,m),0,-1.4,.08));ll.add(P(mkS(.08,m,[.82,.65,.78]),.03,-1.2,.05));
+    ll.add(P(mkS(.08,m,[.85,.55,.9]),0,-1.85,.12));ll.add(P(mkC(.08,.1,.15,m),0,-1.95,.18));
+    ll.add(P(mkCone(.013,.09,claw),-.06,-2.05,.3));ll.add(P(mkCone(.013,.1,claw),0,-2.08,.35));ll.add(P(mkCone(.013,.09,claw),.06,-2.05,.3));
+    ll.position.set(.45,2.1,-.1);g.add(ll);
+    const lr=ll.clone();lr.position.x=-.45;g.add(lr);
+    // Tail — 7 heavy muscular segments
     const tail=new THREE.Group();
-    tail.add(loftMesh(
-        [[0,0,-0.5],[0,-0.03,-1.2],[0,-0.06,-1.9],[0,-0.1,-2.6],[0,-0.15,-3.2],[0,-0.2,-3.8],[0,-0.24,-4.3]],
-        [0.42,0.36,0.3,0.24,0.18,0.12,0.06],
-        [0.27,0.22,0.17,0.12,0.08,0.05,0.03],
-        m,42,16
-    ));
-    tail.position.set(0,2.35,-0.4);g.add(tail);
-    g.userData={parts:{head,neck,legL:ll,legR:lr,tail,body:g.children[0]},bipedal:true,labelY:4.8,scale:1};
-    return g;
+    tail.add(P(mkS(.42,m,[1.8,.65,.58]),0,0,-.5));tail.add(P(mkS(.36,m,[1.8,.6,.52]),0,-.03,-1.2));
+    tail.add(P(mkS(.3,m,[1.8,.55,.48]),0,-.06,-1.9));tail.add(P(mkS(.24,m,[1.9,.46,.4]),0,-.1,-2.6));
+    tail.add(P(mkS(.18,m,[1.9,.38,.34]),0,-.15,-3.2));tail.add(P(mkS(.12,m,[2,.3,.28]),0,-.2,-3.8));
+    tail.add(P(mkS(.06,m,[2,.24,.22]),0,-.24,-4.3));
+    tail.position.set(0,2.35,-.4);g.add(tail);
+    g.userData={parts:{head,neck,legL:ll,legR:lr,tail,body:g.children[0]},bipedal:true,labelY:4.8,scale:1};return g;
 }
 
-/* ── 7. CERATOSAURUS ── */
 function buildCeratosaurus(){
     const g=new THREE.Group();
     const m=skinMat('#8844cc'),ml=skinMat('#aa66ee'),dm=skinMat('#6633aa');
-    const ew=new THREE.MeshStandardMaterial({color:0xffdd22,roughness:0.2}),ep=new THREE.MeshStandardMaterial({color:0x110800});
-    const horn=new THREE.MeshStandardMaterial({color:0xeeddbb,roughness:0.45});
-    const teeth=new THREE.MeshPhysicalMaterial({color:0xfff8ee,roughness:0.15,clearcoat:0.8,clearcoatRoughness:0.1,sheen:0.2,sheenRoughness:0.3,sheenColor:new THREE.Color(0xffffee)});
-    const claw=new THREE.MeshStandardMaterial({color:0x2a1a10,roughness:0.5});
-    // Body
-    const body=loftMesh(
-        [[0,1.95,0.2],[0,1.8,0],[0,1.6,-0.05],[0,1.42,0.05]],
-        [0.55,0.75,0.6,0.5],
-        [0.52,0.7,0.55,0.42],
-        m,16,8
-    );
-    g.add(body);
-    g.add(P(mkS(0.35,ml,[1.3,0.5,0.65]),0,1.35,0));
-    // Neck
+    const ew=new THREE.MeshStandardMaterial({color:0xffdd22,roughness:.2}),ep=new THREE.MeshStandardMaterial({color:0x110800});
+    const horn=new THREE.MeshStandardMaterial({color:0xeeddbb,roughness:.45});
+    const teeth=new THREE.MeshPhysicalMaterial({color:0xfff8ee,roughness:.15,clearcoat:0.8,clearcoatRoughness:.1,sheen:0.2,sheenRoughness:0.3,sheenColor:new THREE.Color(0xffffee)});
+    const claw=new THREE.MeshStandardMaterial({color:0x2a1a10,roughness:.5});
+    // Body — 8 spheres: deep flexible body with hip/shoulder muscles
+    g.add(P(mkS(.65,m,[1.6,1,.82]),0,1.8,0));g.add(P(mkS(.52,ml,[1.3,.82,.72]),0,1.42,.05));
+    g.add(P(mkS(.4,m,[1.15,.8,.68]),0,1.95,.2));g.add(P(mkS(.35,ml,[1.3,.5,.65]),0,1.35,0));
+    g.add(P(mkS(.22,m,[.9,.85,.75]),.25,1.6,-.05));g.add(P(mkS(.22,m,[.9,.85,.75]),-.25,1.6,-.05));
+    g.add(P(mkS(.18,dm,[.85,.78,.65]),.2,1.95,.3));g.add(P(mkS(.18,dm,[.85,.78,.65]),-.2,1.95,.3));
+    // Neck — 3 segments
     const neck=new THREE.Group();
-    neck.add(loftMesh(
-        [[0,0,0],[0,0.2,0.08],[0,0.38,0.16]],
-        [0.2,0.18,0.16],
-        [0.18,0.16,0.14],
-        m,18,16
-    ));
-    neck.position.set(0,2.1,0.45);g.add(neck);
-    // Head
+    neck.add(P(mkS(.2,m,[1,.92,.78]),0,0,0));neck.add(P(mkS(.18,m,[.98,.9,.75]),0,.2,.08));
+    neck.add(P(mkS(.16,m,[.95,.87,.72]),0,.38,.16));
+    neck.position.set(0,2.1,.45);g.add(neck);
+    // Head — prominent horn, brow bumps, detailed jaw
     const head=new THREE.Group();
-    head.add(loftMesh(
-        [[0,0.05,0.28],[0,-0.08,0.48],[0,-0.12,0.6],[0,-0.06,0.68]],
-        [0.26,0.2,0.12,0.08],
-        [0.2,0.14,0.09,0.06],
-        m,24,18
-    ));
-    // Jaw
-    head.add(P(mkS(0.16,m,[1.2,0.42,0.55]),0,-0.18,0.44));
-    // Jaw muscles
-    head.add(P(mkS(0.09,m,[0.8,0.9,0.65]),0.16,-0.02,0.22));head.add(P(mkS(0.09,m,[0.8,0.9,0.65]),-0.16,-0.02,0.22));
-    // NASAL HORN
-    const hn=P(mkCone(0.045,0.28,horn),0,0.24,0.52);hn.rotation.x=-0.25;head.add(hn);
-    // Brow bumps
-    head.add(P(mkS(0.035,horn,[1.2,0.85,0.9]),0.18,0.19,0.3));head.add(P(mkS(0.035,horn,[1.2,0.85,0.9]),-0.18,0.19,0.3));
-    // Nostrils
-    head.add(P(mkS(0.025,new THREE.MeshStandardMaterial({color:0x1a0a15,roughness:0.8})),0.06,0.0,0.65));
-    head.add(P(mkS(0.025,new THREE.MeshStandardMaterial({color:0x1a0a15,roughness:0.8})),-0.06,0.0,0.65));
-    // Teeth
-    for(let i=0;i<6;i++){const t=P(mkCone(0.009,0.042+Math.sin(i*0.5)*0.01,teeth),0.09-0.02*Math.abs(i-2.5),-0.2,0.33+i*0.05);t.rotation.x=Math.PI;head.add(t)}
-    for(let i=0;i<6;i++){const t=P(mkCone(0.008,0.036,teeth),0.09-0.02*Math.abs(i-2.5),-0.1,0.33+i*0.05);head.add(t)}
-    // Eyes
-    head.add(P(mkS(0.055,ew),0.2,0.1,0.3));head.add(P(mkS(0.03,ep),0.23,0.1,0.34));
-    head.add(P(mkS(0.055,ew),-0.2,0.1,0.3));head.add(P(mkS(0.03,ep),-0.23,0.1,0.34));
-    head.position.set(0,2.5,0.75);g.add(head);
-    // Osteoderms
-    for(let i=0;i<12;i++){const sz=0.028+Math.sin(i/11*Math.PI)*0.022;g.add(P(mkS(sz,horn,[1.2,0.8,1]),0,2.25+Math.sin(i/11*Math.PI)*0.14,-0.5+i*0.18))}
-    // Arms
+    head.add(P(mkS(.26,m,[1.4,.84,.74]),0,.05,.28));head.add(P(mkS(.2,m,[1.3,.55,.62]),0,-.08,.48));
+    head.add(P(mkS(.16,m,[1.2,.42,.55]),0,-.18,.44));head.add(P(mkS(.12,m,[1.2,.48,.5]),0,-.12,.6));
+    head.add(P(mkS(.08,dm,[1.1,.4,.48]),0,-.06,.68));
+    head.add(P(mkS(.09,m,[.8,.9,.65]),.16,-.02,.22));head.add(P(mkS(.09,m,[.8,.9,.65]),-.16,-.02,.22));
+    const hn=P(mkCone(.045,.28,horn),0,.24,.52);hn.rotation.x=-.25;head.add(hn);
+    head.add(P(mkS(.035,horn,[1.2,.85,.9]),.18,.19,.3));head.add(P(mkS(.035,horn,[1.2,.85,.9]),-.18,.19,.3));
+    head.add(P(mkS(.025,new THREE.MeshStandardMaterial({color:0x1a0a15,roughness:.8})),.06,.0,.65));
+    head.add(P(mkS(.025,new THREE.MeshStandardMaterial({color:0x1a0a15,roughness:.8})),-.06,.0,.65));
+    for(let i=0;i<6;i++){const t=P(mkCone(.009,.042+Math.sin(i*.5)*.01,teeth),.09-.02*Math.abs(i-2.5),-.2,.33+i*.05);t.rotation.x=Math.PI;head.add(t)}
+    for(let i=0;i<6;i++){const t=P(mkCone(.008,.036,teeth),.09-.02*Math.abs(i-2.5),-.1,.33+i*.05);head.add(t)}
+    head.add(P(mkS(.055,ew),.2,.1,.3));head.add(P(mkS(.03,ep),.23,.1,.34));
+    head.add(P(mkS(.055,ew),-.2,.1,.3));head.add(P(mkS(.03,ep),-.23,.1,.34));
+    head.position.set(0,2.5,.75);g.add(head);
+    // Osteoderms — 12 bony bumps along spine
+    for(let i=0;i<12;i++){const sz=.028+Math.sin(i/11*Math.PI)*.022;g.add(P(mkS(sz,horn,[1.2,.8,1]),0,2.25+Math.sin(i/11*Math.PI)*.14,-.5+i*.18))}
+    // Arms — small 4-fingered with claws
     const armL=new THREE.Group();
-    armL.add(P(mkS(0.03,m,[0.8,0.7,0.6]),0,0,0));
-    armL.add(P(mkC(0.035,0.025,0.25,m),0,-0.12,0));
-    armL.add(P(mkS(0.02,m,[0.8,0.55,0.7]),0,-0.22,0.02));
-    armL.add(P(mkCone(0.006,0.035,claw),0,-0.26,0.04));armL.add(P(mkCone(0.005,0.03,claw),0.01,-0.25,0.035));
-    armL.position.set(0.24,1.7,0.4);armL.rotation.x=-0.5;g.add(armL);
-    const armR=armL.clone();armR.position.x=-0.24;g.add(armR);
-    // Legs
+    armL.add(P(mkS(.03,m,[.8,.7,.6]),0,0,0));armL.add(P(mkC(.035,.025,.25,m),0,-.12,0));
+    armL.add(P(mkS(.02,m,[.8,.55,.7]),0,-.22,.02));armL.add(P(mkCone(.006,.035,claw),0,-.26,.04));armL.add(P(mkCone(.005,.03,claw),.01,-.25,.035));
+    armL.position.set(.24,1.7,.4);armL.rotation.x=-.5;g.add(armL);
+    const armR=armL.clone();armR.position.x=-.24;g.add(armR);
+    // Legs — 11 parts: hip, muscle, thigh, knee, shin, calf, ankle, metatarsal, 3 toes
     const ll=new THREE.Group();
-    ll.add(loftMesh(
-        [[0,0,0],[0.04,-0.1,0.01],[0,-0.38,0],[0,-0.72,0.02],[0,-1.05,0.06],[0,-1.35,0.1],[0,-1.42,0.15]],
-        [0.16,0.12,0.1,0.07,0.07,0.06,0.08],
-        [0.13,0.1,0.08,0.06,0.06,0.05,0.06],
-        m,42,12
-    ));
-    ll.add(P(mkCone(0.011,0.065,claw),-0.04,-1.5,0.25));
-    ll.add(P(mkCone(0.011,0.075,claw),0,-1.52,0.28));
-    ll.add(P(mkCone(0.011,0.065,claw),0.04,-1.5,0.25));
-    ll.position.set(0.3,1.55,-0.05);g.add(ll);
-    const lr=ll.clone();lr.position.x=-0.3;g.add(lr);
-    // Tail
+    ll.add(P(mkS(.16,m,[.8,1,.72]),0,0,0));ll.add(P(mkS(.12,m,[.82,.82,.65]),.04,-.1,.01));
+    ll.add(P(mkC(.1,.07,.65,m),0,-.38,0));ll.add(P(mkS(.07,m,[.85,.65,.8]),0,-.72,.02));
+    ll.add(P(mkC(.07,.05,.6,m),0,-1.05,.06));ll.add(P(mkS(.055,m,[.8,.6,.75]),.02,-.9,.04));
+    ll.add(P(mkS(.06,m,[.8,.5,.85]),0,-1.35,.1));ll.add(P(mkC(.06,.08,.1,m),0,-1.42,.15));
+    ll.add(P(mkCone(.011,.065,claw),-.04,-1.5,.25));ll.add(P(mkCone(.011,.075,claw),0,-1.52,.28));ll.add(P(mkCone(.011,.065,claw),.04,-1.5,.25));
+    ll.position.set(.3,1.55,-.05);g.add(ll);
+    const lr=ll.clone();lr.position.x=-.3;g.add(lr);
+    // Tail — 7 deep flexible segments
     const tail=new THREE.Group();
-    tail.add(loftMesh(
-        [[0,0,-0.4],[0,-0.02,-0.9],[0,-0.04,-1.4],[0,-0.08,-1.9],[0,-0.12,-2.35],[0,-0.16,-2.75],[0,-0.19,-3.1]],
-        [0.32,0.27,0.22,0.18,0.14,0.09,0.05],
-        [0.2,0.16,0.12,0.09,0.06,0.04,0.02],
-        m,42,16
-    ));
-    tail.position.set(0,1.75,-0.25);g.add(tail);
-    g.userData={parts:{head,neck,legL:ll,legR:lr,tail,body:g.children[0]},bipedal:true,labelY:3.5,scale:0.8};
-    return g;
+    tail.add(P(mkS(.32,m,[1.7,.62,.56]),0,0,-.4));tail.add(P(mkS(.27,m,[1.7,.56,.5]),0,-.02,-.9));
+    tail.add(P(mkS(.22,m,[1.7,.5,.45]),0,-.04,-1.4));tail.add(P(mkS(.18,m,[1.8,.44,.4]),0,-.08,-1.9));
+    tail.add(P(mkS(.14,m,[1.8,.38,.34]),0,-.12,-2.35));tail.add(P(mkS(.09,m,[1.9,.32,.28]),0,-.16,-2.75));
+    tail.add(P(mkS(.05,m,[2,.26,.22]),0,-.19,-3.1));
+    tail.position.set(0,1.75,-.25);g.add(tail);
+    g.userData={parts:{head,neck,legL:ll,legR:lr,tail,body:g.children[0]},bipedal:true,labelY:3.5,scale:.8};return g;
 }
 
-/* ── 8. TRICERATOPS ── */
+/* ── CRETACEOUS DINOSAUR MODELS ── */
 function buildTriceratops(){
     const g=new THREE.Group();
     const m=skinMat('#ddaa33'),ml=skinMat('#eebb55'),dm=skinMat('#bb8822');
-    const ew=new THREE.MeshPhysicalMaterial({color:0xffffdd,roughness:0.08,clearcoat:1,clearcoatRoughness:0.05,envMapIntensity:3}),ep=new THREE.MeshStandardMaterial({color:0x111100});
-    const horn=new THREE.MeshStandardMaterial({color:0xfffff0,roughness:0.45});
+    const ew=new THREE.MeshPhysicalMaterial({color:0xffffdd,roughness:.08,clearcoat:1,clearcoatRoughness:.05,envMapIntensity:3}),ep=new THREE.MeshStandardMaterial({color:0x111100});
+    const horn=new THREE.MeshStandardMaterial({color:0xfffff0,roughness:.45});
     const frill=skinMat('#cc8822');
-    const beak=new THREE.MeshStandardMaterial({color:0x665522,roughness:0.65});
-    const claw=new THREE.MeshStandardMaterial({color:0x4a3818,roughness:0.6});
-    // Body
-    const body=loftMesh(
-        [[0,2.18,0.65],[0,2.1,0.4],[0,1.85,0],[0,1.7,0],[0,1.4,0.08],[0,1.2,-0.1]],
-        [0.65,0.85,1.2,1.0,0.9,0.55],
-        [0.65,0.9,1.2,1.05,0.85,0.5],
-        m,16,8
-    );
-    g.add(body);
-    // Inline neck spheres
-    g.add(P(mkS(0.45,m,[1.1,0.9,0.85]),0,2.15,0.8));
-    g.add(P(mkS(0.38,m,[1.05,0.85,0.82]),0,2.1,0.95));
-    // Head
+    const beak=new THREE.MeshStandardMaterial({color:0x665522,roughness:.65});
+    const claw=new THREE.MeshStandardMaterial({color:0x4a3818,roughness:.6});
+    // Body — 9 spheres: massive barrel with ribcage and muscle detail
+    g.add(P(mkS(1.15,m,[1.85,1.15,1.15]),0,1.85,0));g.add(P(mkS(.9,ml,[1.5,.92,.98]),0,1.4,.08));
+    g.add(P(mkS(.7,m,[1.3,.95,.9]),0,2.1,.4));g.add(P(mkS(.5,m,[1.1,.9,.95]),.4,1.7,0));
+    g.add(P(mkS(.5,m,[1.1,.9,.95]),-.4,1.7,0));g.add(P(mkS(.55,dm,[1.2,.7,.85]),0,1.2,-.1));
+    g.add(P(mkS(.4,dm,[.9,.85,.7]),.35,1.85,-.4));g.add(P(mkS(.4,dm,[.9,.85,.7]),-.35,1.85,-.4));
+    g.add(P(mkS(.48,m,[1.15,.88,.88]),0,2.18,.65));
+    // Neck — short, thick, muscular
+    g.add(P(mkS(.45,m,[1.1,.9,.85]),0,2.15,.8));g.add(P(mkS(.38,m,[1.05,.85,.82]),0,2.1,.95));
+    // Head — massive with frill, horns, beak, jaw muscles
     const head=new THREE.Group();
-    head.add(loftMesh(
-        [[0,0.02,0.25],[0,-0.04,0.5],[0,-0.12,0.72]],
-        [0.42,0.28,0.15],
-        [0.36,0.2,0.1],
-        m,18,18
-    ));
-    head.add(P(mkS(0.1,m,[1.15,0.42,0.5]),0,-0.16,0.58));
-    head.add(P(mkS(0.15,beak,[1.4,0.5,0.55]),0,-0.12,0.72));
-    // Jaw muscles
-    head.add(P(mkS(0.16,m,[0.82,0.88,0.72]),0.26,-0.02,0.18));head.add(P(mkS(0.16,m,[0.82,0.88,0.72]),-0.26,-0.02,0.18));
-    // Brow horns
-    const lh=P(mkCone(0.042,0.72,horn),0.26,0.28,0.2);lh.rotation.x=-0.55;lh.rotation.z=-0.12;head.add(lh);
-    const rh=P(mkCone(0.042,0.72,horn),-0.26,0.28,0.2);rh.rotation.x=-0.55;rh.rotation.z=0.12;head.add(rh);
+    head.add(P(mkS(.42,m,[1.35,.88,.82]),0,.02,.25));head.add(P(mkS(.28,m,[1.2,.68,.68]),0,-.04,.5));
+    head.add(P(mkS(.15,beak,[1.4,.5,.55]),0,-.12,.72));head.add(P(mkS(.1,m,[1.15,.42,.5]),0,-.16,.58));
+    head.add(P(mkS(.16,m,[.82,.88,.72]),.26,-.02,.18));head.add(P(mkS(.16,m,[.82,.88,.72]),-.26,-.02,.18));
+    head.add(P(mkS(.08,dm,[.9,.6,.55]),.2,.02,.42));head.add(P(mkS(.08,dm,[.9,.6,.55]),-.2,.02,.42));
+    // Brow horns — long, forward-curving
+    const lh=P(mkCone(.042,.72,horn),.26,.28,.2);lh.rotation.x=-.55;lh.rotation.z=-.12;head.add(lh);
+    const rh=P(mkCone(.042,.72,horn),-.26,.28,.2);rh.rotation.x=-.55;rh.rotation.z=.12;head.add(rh);
     // Nose horn
-    const nh=P(mkCone(0.042,0.2,horn),0,0.08,0.72);nh.rotation.x=-0.35;head.add(nh);
-    // Frill
-    head.add(P(mkS(0.62,frill,[1.28,1.08,0.12]),0,0.18,-0.22));
-    head.add(P(mkS(0.15,frill,[1.1,0.9,0.08]),0.4,0.18,-0.18));head.add(P(mkS(0.15,frill,[1.1,0.9,0.08]),-0.4,0.18,-0.18));
-    // Epoccipitals
-    for(let i=0;i<12;i++){const ang=-1.4+i*0.255,r=0.6;const ex=Math.sin(ang)*r,ey=0.18+Math.cos(ang)*r*0.85;const ep2=P(mkCone(0.032,0.09,horn),ex,ey,-0.22);ep2.rotation.z=-ang;head.add(ep2)}
-    // Eyes
-    head.add(P(mkS(0.055,ew),0.32,0.02,0.28));head.add(P(mkS(0.032,ep),0.35,0.02,0.32));
-    head.add(P(mkS(0.055,ew),-0.32,0.02,0.28));head.add(P(mkS(0.032,ep),-0.35,0.02,0.32));
+    const nh=P(mkCone(.042,.2,horn),0,.08,.72);nh.rotation.x=-.35;head.add(nh);
+    // Frill — large scalloped shield
+    head.add(P(mkS(.62,frill,[1.28,1.08,.12]),0,.18,-.22));
+    head.add(P(mkS(.15,frill,[1.1,.9,.08]),.4,.18,-.18));head.add(P(mkS(.15,frill,[1.1,.9,.08]),-.4,.18,-.18));
+    // 12 scalloped epoccipitals
+    for(let i=0;i<12;i++){const ang=-1.4+i*.255,r=.6;const ex=Math.sin(ang)*r,ey=.18+Math.cos(ang)*r*.9;const ep2=P(mkCone(.032,.09,horn),ex,ey,-.22);ep2.rotation.z=-ang;head.add(ep2)}
+    head.add(P(mkS(.055,ew),.32,.02,.28));head.add(P(mkS(.032,ep),.35,.02,.32));
+    head.add(P(mkS(.055,ew),-.32,.02,.28));head.add(P(mkS(.032,ep),-.35,.02,.32));
     head.position.set(0,2.0,1.35);g.add(head);
-    // Front legs
-    function mkFLeg(x,z){
-        const lg=new THREE.Group();
-        lg.add(loftMesh(
-            [[0,0,0],[0.03,-0.15,0.02],[0,-0.55,0],[0,-1.05,0.02],[0,-1.25,0.03],[0,-1.4,0.04],[0,-1.48,0.05]],
-            [0.16,0.12,0.12,0.09,0.09,0.07,0.09],
-            [0.14,0.1,0.1,0.07,0.07,0.05,0.06],
-            m,42,12
-        ));
-        lg.add(P(mkS(0.09,claw,[1,0.35,1.2]),0,-1.48,0.05));
-        lg.position.set(x,1.5,z);return lg;
-    }
-    function mkBLeg(x,z){
-        const lg=new THREE.Group();
-        lg.add(loftMesh(
-            [[0,0,0],[0.04,-0.12,0.02],[0,-0.62,0],[0,-1.2,0.02],[0,-1.42,0.04],[0,-1.58,0.06]],
-            [0.2,0.15,0.14,0.1,0.1,0.08],
-            [0.18,0.13,0.12,0.08,0.08,0.06],
-            m,36,12
-        ));
-        lg.add(P(mkCone(0.016,0.065,claw),-0.05,-1.65,0.1));
-        lg.add(P(mkCone(0.016,0.075,claw),0,-1.67,0.12));
-        lg.add(P(mkCone(0.016,0.065,claw),0.05,-1.65,0.1));
-        lg.position.set(x,1.6,z);return lg;
-    }
-    const fll=mkFLeg(0.6,0.95),flr=mkFLeg(-0.6,0.95),bll=mkBLeg(0.55,-0.65),blr=mkBLeg(-0.55,-0.65);
+    // Front legs — 7 parts: shorter, with hoof-like feet
+    function mkFLeg(x,z){const lg=new THREE.Group();lg.add(P(mkS(.16,m,[.85,1,.78]),0,0,0));lg.add(P(mkS(.12,m,[.82,.82,.7]),.03,-.15,.02));lg.add(P(mkC(.12,.09,1,m),0,-.55,0));lg.add(P(mkS(.09,m,[.8,.58,.8]),0,-1.05,.02));lg.add(P(mkC(.09,.08,.35,m),0,-1.25,.03));lg.add(P(mkS(.07,dm,[.82,.45,.8]),0,-1.4,.04));lg.add(P(mkS(.09,claw,[1,.35,1.2]),0,-1.48,.05));lg.position.set(x,1.5,z);return lg}
+    // Back legs — 9 parts: heavier with 3 toes
+    function mkBLeg(x,z){const lg=new THREE.Group();lg.add(P(mkS(.2,m,[.85,1.1,.8]),0,0,0));lg.add(P(mkS(.15,m,[.82,.85,.72]),.04,-.12,.02));lg.add(P(mkC(.14,.1,1.15,m),0,-.62,0));lg.add(P(mkS(.1,m,[.8,.6,.85]),0,-1.2,.02));lg.add(P(mkC(.1,.09,.4,m),0,-1.42,.04));lg.add(P(mkS(.08,dm,[.82,.48,.82]),0,-1.58,.06));lg.add(P(mkCone(.016,.065,claw),-.05,-1.65,.1));lg.add(P(mkCone(.016,.075,claw),0,-1.67,.12));lg.add(P(mkCone(.016,.065,claw),.05,-1.65,.1));lg.position.set(x,1.6,z);return lg}
+    const fll=mkFLeg(.6,.95),flr=mkFLeg(-.6,.95),bll=mkBLeg(.55,-.65),blr=mkBLeg(-.55,-.65);
     g.add(fll,flr,bll,blr);
-    // Tail
+    // Tail — 5 short thick segments
     const tail=new THREE.Group();
-    tail.add(loftMesh(
-        [[0,0,-0.45],[0,-0.03,-0.95],[0,-0.07,-1.4],[0,-0.11,-1.85],[0,-0.15,-2.25]],
-        [0.42,0.34,0.26,0.18,0.1],
-        [0.26,0.2,0.15,0.1,0.05],
-        m,30,16
-    ));
-    tail.position.set(0,1.65,-0.75);g.add(tail);
-    g.userData={parts:{head,legFL:fll,legFR:flr,legBL:bll,legBR:blr,tail,body:g.children[0]},bipedal:false,labelY:4,scale:1};
-    return g;
+    tail.add(P(mkS(.42,m,[1.55,.62,.56]),0,0,-.45));tail.add(P(mkS(.34,m,[1.52,.54,.48]),0,-.03,-.95));
+    tail.add(P(mkS(.26,m,[1.5,.46,.4]),0,-.07,-1.4));tail.add(P(mkS(.18,m,[1.55,.38,.34]),0,-.11,-1.85));
+    tail.add(P(mkS(.1,m,[1.6,.3,.26]),0,-.15,-2.25));
+    tail.position.set(0,1.65,-.75);g.add(tail);
+    g.userData={parts:{head,legFL:fll,legFR:flr,legBL:bll,legBR:blr,tail,body:g.children[0]},bipedal:false,labelY:4,scale:1};return g;
 }
 
-/* ── 9. VELOCIRAPTOR ── */
 function buildVelociraptor(){
     const g=new THREE.Group();
     const m=skinMat('#ee7722'),dm=skinMat('#cc5511');
-    const fm=new THREE.MeshStandardMaterial({color:0xff9933,side:THREE.DoubleSide,roughness:0.5});
-    const primFm=new THREE.MeshStandardMaterial({color:0xcc6622,side:THREE.DoubleSide,roughness:0.55});
-    const ew=new THREE.MeshStandardMaterial({color:0xffdd22,roughness:0.2}),ep=new THREE.MeshStandardMaterial({color:0x110800});
-    const claw=new THREE.MeshStandardMaterial({color:0x2a1a10,roughness:0.5});
-    const teeth=new THREE.MeshPhysicalMaterial({color:0xfff8ee,roughness:0.15,clearcoat:0.8,clearcoatRoughness:0.1,sheen:0.2,sheenRoughness:0.3,sheenColor:new THREE.Color(0xffffee)});
-    // Body
-    const body=loftMesh(
-        [[0,0.56,0.12],[0,0.55,0],[0,0.52,0.02],[0,0.48,-0.06]],
-        [0.08,0.14,0.12,0.06],
-        [0.06,0.1,0.08,0.05],
-        m,16,8
-    );
-    g.add(body);
-    // Neck
-    const neckG=new THREE.Group();
-    neckG.add(loftMesh(
-        [[0,0,0],[0,0.06,0.04],[0,0.11,0.07],[0,0.16,0.1]],
-        [0.055,0.05,0.045,0.04],
-        [0.047,0.043,0.038,0.033],
-        m,24,16
-    ));
-    neckG.position.set(0,0.6,0.18);g.add(neckG);
-    // Head
+    const fm=new THREE.MeshStandardMaterial({color:0xff9933,side:THREE.DoubleSide,roughness:.5});
+    const primFm=new THREE.MeshStandardMaterial({color:0xcc6622,side:THREE.DoubleSide,roughness:.55});
+    const ew=new THREE.MeshStandardMaterial({color:0xffdd22,roughness:.2}),ep=new THREE.MeshStandardMaterial({color:0x110800});
+    const claw=new THREE.MeshStandardMaterial({color:0x2a1a10,roughness:.5});
+    const teeth=new THREE.MeshPhysicalMaterial({color:0xfff8ee,roughness:.15,clearcoat:0.8,clearcoatRoughness:.1,sheen:0.2,sheenRoughness:0.3,sheenColor:new THREE.Color(0xffffee)});
+    // Body — 7 spheres: sleek bird-like with muscle detail
+    g.add(P(mkS(.2,m,[1.5,.78,.65]),0,.55,0));g.add(P(mkS(.16,m,[1.2,.65,.55]),0,.52,.02));
+    g.add(P(mkS(.09,m,[.85,.8,.7]),.08,.52,.08));g.add(P(mkS(.09,m,[.85,.8,.7]),-.08,.52,.08));
+    g.add(P(mkS(.1,dm,[1.2,.5,.55]),0,.48,-.06));g.add(P(mkS(.08,m,[1,.62,.5]),0,.56,.12));
+    g.add(P(mkS(.06,dm,[.8,.7,.55]),.06,.48,-.02));
+    // Neck — 4 S-curved segments
+    const neck=new THREE.Group();
+    neck.add(P(mkS(.055,m,[.95,.9,.78]),0,0,0));neck.add(P(mkS(.05,m,[.92,.88,.74]),0,.06,.04));
+    neck.add(P(mkS(.045,m,[.88,.85,.7]),0,.11,.07));neck.add(P(mkS(.04,m,[.85,.82,.66]),0,.16,.1));
+    neck.position.set(0,.6,.18);g.add(neck);
+    // Head — long snout with more teeth, bigger eyes, nostrils, jaw detail
     const head=new THREE.Group();
-    head.add(loftMesh(
-        [[0,0.02,0.1],[0,-0.003,0.2],[0,-0.02,0.24],[0,-0.03,0.18]],
-        [0.085,0.055,0.03,0.04],
-        [0.06,0.03,0.02,0.025],
-        m,24,18
-    ));
-    // Nostrils
-    head.add(P(mkS(0.01,new THREE.MeshStandardMaterial({color:0x1a0a05,roughness:0.8})),0.02,0.01,0.28));
-    head.add(P(mkS(0.01,new THREE.MeshStandardMaterial({color:0x1a0a05,roughness:0.8})),-0.02,0.01,0.28));
-    // Teeth
-    for(let i=0;i<8;i++){const t=P(mkCone(0.003,0.018,teeth),0.028-0.005*Math.abs(i-3.5),-0.03,0.08+i*0.028);t.rotation.x=Math.PI;head.add(t)}
-    for(let i=0;i<8;i++){const t=P(mkCone(0.003,0.015,teeth),0.028-0.005*Math.abs(i-3.5),-0.015,0.08+i*0.028);head.add(t)}
-    // Eyes
-    head.add(P(mkS(0.038,ew),0.06,0.04,0.08));head.add(P(mkS(0.022,ep),0.068,0.04,0.1));
-    head.add(P(mkS(0.038,ew),-0.06,0.04,0.08));head.add(P(mkS(0.022,ep),-0.068,0.04,0.1));
-    head.position.set(0,0.78,0.28);g.add(head);
-    // Arms (separate L and R, NOT cloned)
+    head.add(P(mkS(.085,m,[1.5,.78,.68]),0,.02,.1));head.add(P(mkS(.055,m,[1.85,.5,.44]),0,-.003,.2));
+    head.add(P(mkS(.04,m,[1.6,.38,.4]),0,-.03,.18));head.add(P(mkS(.03,dm,[1.4,.35,.38]),0,-.02,.24));
+    head.add(P(mkS(.025,dm,[.8,.6,.5]),.05,.01,.1));head.add(P(mkS(.025,dm,[.8,.6,.5]),-.05,.01,.1));
+    head.add(P(mkS(.01,new THREE.MeshStandardMaterial({color:0x1a0a05,roughness:.8})),.02,.01,.28));
+    head.add(P(mkS(.01,new THREE.MeshStandardMaterial({color:0x1a0a05,roughness:.8})),-.02,.01,.28));
+    for(let i=0;i<8;i++){const t=P(mkCone(.003,.018,teeth),.028-.005*Math.abs(i-3.5),-.03,.08+i*.028);t.rotation.x=Math.PI;head.add(t)}
+    for(let i=0;i<8;i++){const t=P(mkCone(.003,.015,teeth),.028-.005*Math.abs(i-3.5),-.015,.08+i*.028);head.add(t)}
+    head.add(P(mkS(.038,ew),.06,.04,.08));head.add(P(mkS(.022,ep),.068,.04,.1));
+    head.add(P(mkS(.038,ew),-.06,.04,.08));head.add(P(mkS(.022,ep),-.068,.04,.1));
+    head.position.set(0,.78,.28);g.add(head);
+    // Arms — feathered with 6 primaries, 4 secondaries, 3 claws
     const al=new THREE.Group();
-    al.add(P(mkS(0.014,m,[0.82,0.75,0.72]),0,0,0));
-    al.add(P(mkC(0.016,0.012,0.1,m),0,-0.05,0));
-    al.add(P(mkS(0.012,m,[0.8,0.65,0.78]),0,-0.1,0));
-    al.add(P(mkC(0.012,0.009,0.08,m),0,-0.16,0.02));
-    for(let i=0;i<6;i++){const f=P(mkB(0.055+i*0.012,0.002,0.018+i*0.003,primFm),0.025+i*0.022,-0.07-0.018*i,0.01);f.rotation.z=-0.07*i;al.add(f)}
-    for(let i=0;i<4;i++){al.add(P(mkB(0.04+i*0.005,0.002,0.022,fm),0.01+i*0.018,-0.04,0.01))}
-    al.add(P(mkCone(0.004,0.028,claw),0.01,-0.2,0.04));al.add(P(mkCone(0.005,0.035,claw),0,-0.22,0.05));al.add(P(mkCone(0.004,0.028,claw),-0.01,-0.2,0.04));
-    al.position.set(0.1,0.54,0.12);g.add(al);
+    al.add(P(mkS(.014,m,[.82,.75,.72]),0,0,0));al.add(P(mkC(.016,.012,.1,m),0,-.05,0));
+    al.add(P(mkS(.012,m,[.8,.65,.78]),0,-.1,0));al.add(P(mkC(.012,.009,.08,m),0,-.16,.02));
+    for(let i=0;i<6;i++){const f=P(mkB(.055+i*.012,.002,.018+i*.003,primFm),.025+i*.022,-.07-.018*i,.01);f.rotation.z=-.07*i;al.add(f)}
+    for(let i=0;i<4;i++){al.add(P(mkB(.04+i*.005,.002,.022,fm),.01+i*.018,-.04,.01))}
+    al.add(P(mkCone(.004,.028,claw),.01,-.2,.04));al.add(P(mkCone(.005,.035,claw),0,-.22,.05));al.add(P(mkCone(.004,.028,claw),-.01,-.2,.04));
+    al.position.set(.1,.54,.12);g.add(al);
     const ar=new THREE.Group();
-    ar.add(P(mkS(0.014,m,[0.82,0.75,0.72]),0,0,0));
-    ar.add(P(mkC(0.016,0.012,0.1,m),0,-0.05,0));
-    ar.add(P(mkS(0.012,m,[0.8,0.65,0.78]),0,-0.1,0));
-    ar.add(P(mkC(0.012,0.009,0.08,m),0,-0.16,0.02));
-    for(let i=0;i<6;i++){const f=P(mkB(0.055+i*0.012,0.002,0.018+i*0.003,primFm),-0.025-i*0.022,-0.07-0.018*i,0.01);f.rotation.z=0.07*i;ar.add(f)}
-    for(let i=0;i<4;i++){ar.add(P(mkB(0.04+i*0.005,0.002,0.022,fm),-0.01-i*0.018,-0.04,0.01))}
-    ar.add(P(mkCone(0.004,0.028,claw),0.01,-0.2,0.04));ar.add(P(mkCone(0.005,0.035,claw),0,-0.22,0.05));ar.add(P(mkCone(0.004,0.028,claw),-0.01,-0.2,0.04));
-    ar.position.set(-0.1,0.54,0.12);g.add(ar);
-    // Legs with SICKLE CLAW
+    ar.add(P(mkS(.014,m,[.82,.75,.72]),0,0,0));ar.add(P(mkC(.016,.012,.1,m),0,-.05,0));
+    ar.add(P(mkS(.012,m,[.8,.65,.78]),0,-.1,0));ar.add(P(mkC(.012,.009,.08,m),0,-.16,.02));
+    for(let i=0;i<6;i++){const f=P(mkB(.055+i*.012,.002,.018+i*.003,primFm),-.025-i*.022,-.07-.018*i,.01);f.rotation.z=.07*i;ar.add(f)}
+    for(let i=0;i<4;i++){ar.add(P(mkB(.04+i*.005,.002,.022,fm),-.01-i*.018,-.04,.01))}
+    ar.add(P(mkCone(.004,.028,claw),.01,-.2,.04));ar.add(P(mkCone(.005,.035,claw),0,-.22,.05));ar.add(P(mkCone(.004,.028,claw),-.01,-.2,.04));
+    ar.position.set(-.1,.54,.12);g.add(ar);
+    // Legs — 12 parts: hip, muscle, thigh, knee, shin, calf, ankle, metatarsal, sickle claw, 2 toes
     const ll=new THREE.Group();
-    ll.add(loftMesh(
-        [[0,0,0],[0.01,-0.02,0.01],[0,-0.09,0],[0,-0.18,0.01],[0,-0.27,0.02],[0,-0.35,0.03],[0,-0.38,0.05]],
-        [0.04,0.03,0.025,0.018,0.018,0.014,0.018],
-        [0.032,0.025,0.02,0.015,0.014,0.012,0.014],
-        m,42,12
-    ));
-    const kc=P(mkCone(0.007,0.065,claw),-0.02,-0.36,0.04);kc.rotation.x=-0.7;ll.add(kc);
-    ll.add(P(mkCone(0.005,0.038,claw),0,-0.42,0.08));
-    ll.add(P(mkCone(0.005,0.032,claw),0.02,-0.41,0.07));
-    ll.position.set(0.08,0.44,-0.04);g.add(ll);
-    const lr=ll.clone();lr.position.x=-0.08;g.add(lr);
-    // Tail with feather fans
+    ll.add(P(mkS(.04,m,[.82,1,.72]),0,0,0));ll.add(P(mkS(.03,m,[.78,.8,.65]),.01,-.02,.01));
+    ll.add(P(mkC(.025,.018,.16,m),0,-.09,0));ll.add(P(mkS(.018,m,[.8,.6,.8]),0,-.18,.01));
+    ll.add(P(mkC(.018,.014,.14,m),0,-.27,.02));ll.add(P(mkS(.015,m,[.76,.58,.75]),.005,-.22,.015));
+    ll.add(P(mkS(.014,m,[.78,.5,.82]),0,-.35,.03));ll.add(P(mkC(.014,.018,.04,m),0,-.38,.05));
+    const kc=P(mkCone(.007,.065,claw),-.02,-.36,.04);kc.rotation.x=-.7;ll.add(kc);
+    ll.add(P(mkCone(.005,.038,claw),0,-.42,.08));ll.add(P(mkCone(.005,.032,claw),.02,-.41,.07));
+    ll.position.set(.08,.44,-.04);g.add(ll);
+    const lr=ll.clone();lr.position.x=-.08;g.add(lr);
+    // Tail — 10 stiff segments with 5 paired feather fans
     const tail=new THREE.Group();
-    const tPts=[],tW=[],tH=[];
-    for(let i=0;i<10;i++){const r=0.055-0.005*i;tPts.push([0,-0.002*i,-0.15*i]);tW.push(Math.max(0.008,r)*0.8);tH.push(Math.max(0.008,r)*0.16)}
-    tail.add(loftMesh(tPts,tW,tH,m,20,8));
+    for(let i=0;i<10;i++){const r=.055-.005*i;tail.add(P(mkS(Math.max(.008,r),m,[2.2-.04*i,.32-.018*i,.28-.018*i]),0,-.002*i,-.15*i))}
     for(let i=0;i<5;i++){
-        const f1=P(mkB(0.028+i*0.006,0.002,0.014+i*0.002,fm),0.01,0,-1.1-i*0.04);f1.rotation.z=-0.1;tail.add(f1);
-        const f2=P(mkB(0.028+i*0.006,0.002,0.014+i*0.002,fm),-0.01,0,-1.1-i*0.04);f2.rotation.z=0.1;tail.add(f2);
+        const f1=P(mkB(.028+i*.006,.002,.014+i*.002,fm),.01,0,-1.1-i*.04);f1.rotation.z=-.1;tail.add(f1);
+        const f2=P(mkB(.028+i*.006,.002,.014+i*.002,fm),-.01,0,-1.1-i*.04);f2.rotation.z=.1;tail.add(f2);
     }
-    tail.position.set(0,0.53,-0.14);g.add(tail);
-    g.userData={parts:{head,armL:al,armR:ar,legL:ll,legR:lr,tail,body:g.children[0]},bipedal:true,labelY:1.1,scale:0.35};
-    return g;
+    tail.position.set(0,.53,-.14);g.add(tail);
+    g.userData={parts:{head,armL:al,armR:ar,legL:ll,legR:lr,tail,body:g.children[0]},bipedal:true,labelY:1.1,scale:.35};return g;
 }
 
-/* ── 10. PARASAUROLOPHUS ── */
 function buildParasaurolophus(){
     const g=new THREE.Group();
     const m=skinMat('#33bb55'),ml=skinMat('#55dd77'),nm=skinMat('#22aa44'),dm=skinMat('#1a8833');
-    const ew=new THREE.MeshPhysicalMaterial({color:0xffffdd,roughness:0.08,clearcoat:1,clearcoatRoughness:0.05,envMapIntensity:3}),ep=new THREE.MeshStandardMaterial({color:0x111100});
+    const ew=new THREE.MeshPhysicalMaterial({color:0xffffdd,roughness:.08,clearcoat:1,clearcoatRoughness:.05,envMapIntensity:3}),ep=new THREE.MeshStandardMaterial({color:0x111100});
     const crest=skinMat('#44ee66');
-    const bill=new THREE.MeshStandardMaterial({color:0x88cc66,roughness:0.6});
-    const clawM=new THREE.MeshStandardMaterial({color:0x4a3818,roughness:0.6});
-    // Body
-    const body=loftMesh(
-        [[0,2.55,0.4],[0,2.45,0.25],[0,2.2,0],[0,2.0,0],[0,1.72,0.08]],
-        [0.55,0.7,0.9,0.7,0.55],
-        [0.55,0.7,0.88,0.65,0.5],
-        m,16,8
-    );
-    g.add(body);
-    g.add(P(mkS(0.4,ml,[1.3,0.5,0.7]),0,1.65,0));
-    // Neck
+    const bill=new THREE.MeshStandardMaterial({color:0x88cc66,roughness:.6});
+    const claw=new THREE.MeshStandardMaterial({color:0x4a3818,roughness:.6});
+    // Body — 9 spheres: large barrel with ribcage and hip muscles
+    g.add(P(mkS(.9,m,[1.7,1,.88]),0,2.2,0));g.add(P(mkS(.72,ml,[1.4,.82,.78]),0,1.72,.08));
+    g.add(P(mkS(.55,m,[1.2,.88,.75]),0,2.45,.25));g.add(P(mkS(.35,m,[1,.85,.8]),.3,2,0));
+    g.add(P(mkS(.35,m,[1,.85,.8]),-.3,2,0));g.add(P(mkS(.3,m,[.9,.95,.78]),.32,1.9,-.15));
+    g.add(P(mkS(.3,m,[.9,.95,.78]),-.32,1.9,-.15));g.add(P(mkS(.4,ml,[1.3,.5,.7]),0,1.65,0));
+    g.add(P(mkS(.35,dm,[1.1,.72,.65]),0,2.55,.4));
+    // Neck — 6 S-curved segments with muscle bulges
     const neck=new THREE.Group();
-    const nd=[{y:0,z:0,r:0.25},{y:0.45,z:0.15,r:0.23},{y:0.85,z:0.28,r:0.21},{y:1.2,z:0.38,r:0.19},{y:1.5,z:0.46,r:0.17},{y:1.72,z:0.52,r:0.15}];
-    const nPts=[],nW=[],nH=[];
-    nd.forEach(s=>{nPts.push([0,s.y,s.z]);nW.push(s.r);nH.push(s.r*0.88)});
-    neck.add(loftMesh(nPts,nW,nH,nm,16,8));
-    neck.position.set(0,2.55,0.55);g.add(neck);
-    // Head
+    [{y:0,z:0,r:.25},{y:.45,z:.15,r:.23},{y:.85,z:.28,r:.21},{y:1.2,z:.38,r:.19},{y:1.5,z:.46,r:.17},{y:1.72,z:.52,r:.15}].forEach(s=>{neck.add(P(mkS(s.r,nm,[1,.92,.8]),0,s.y,s.z))});
+    neck.add(P(mkS(.08,m,[1,.75,.6]),.1,.3,.08));neck.add(P(mkS(.08,m,[1,.75,.6]),-.1,.3,.08));
+    neck.position.set(0,2.55,.55);g.add(neck);
+    // Head — duck bill, tubular crest (4 segments), jaw muscles, cheeks
     const head=new THREE.Group();
-    head.add(loftMesh(
-        [[0,0,0.12],[0,-0.03,0.28],[0,-0.06,0.38]],
-        [0.2,0.13,0.1],
-        [0.16,0.1,0.06],
-        m,18,18
-    ));
-    head.add(P(mkS(0.1,m,[1.1,0.5,0.52]),0,-0.12,0.26));
-    // Duck bill
-    head.add(P(mkS(0.1,bill,[1.6,0.35,0.65]),0,-0.06,0.38));
-    head.add(P(mkS(0.08,bill,[1.4,0.28,0.6]),0,-0.14,0.36));
-    // Jaw muscles
-    head.add(P(mkS(0.07,m,[0.78,0.82,0.65]),0.12,-0.02,0.08));head.add(P(mkS(0.07,m,[0.78,0.82,0.65]),-0.12,-0.02,0.08));
-    // TUBULAR CREST
-    const cr1=P(mkC(0.042,0.037,0.3,crest),0,0.2,0.02);cr1.rotation.x=0.25;head.add(cr1);
-    const cr2=P(mkC(0.037,0.03,0.35,crest),0,0.38,-0.08);cr2.rotation.x=0.5;head.add(cr2);
-    const cr3=P(mkC(0.03,0.022,0.35,crest),0,0.55,-0.25);cr3.rotation.x=0.75;head.add(cr3);
-    head.add(P(mkS(0.022,crest,[1,0.82,0.72]),0,0.68,-0.45));
-    // Nostrils
-    head.add(P(mkS(0.02,new THREE.MeshStandardMaterial({color:0x1a2a0a,roughness:0.8})),0.06,0.04,0.12));
-    head.add(P(mkS(0.02,new THREE.MeshStandardMaterial({color:0x1a2a0a,roughness:0.8})),-0.06,0.04,0.12));
-    // Eyes
-    head.add(P(mkS(0.05,ew),0.14,0.04,0.1));head.add(P(mkS(0.03,ep),0.16,0.04,0.13));
-    head.add(P(mkS(0.05,ew),-0.14,0.04,0.1));head.add(P(mkS(0.03,ep),-0.16,0.04,0.13));
+    head.add(P(mkS(.2,m,[1.3,.78,.7]),0,0,.12));head.add(P(mkS(.13,m,[1.15,.62,.6]),0,-.03,.28));
+    head.add(P(mkS(.1,m,[1.1,.5,.52]),0,-.12,.26));head.add(P(mkS(.05,dm,[.9,.55,.5]),.1,-.01,.14));
+    head.add(P(mkS(.05,dm,[.9,.55,.5]),-.1,-.01,.14));
+    head.add(P(mkS(.1,bill,[1.6,.35,.65]),0,-.06,.38));head.add(P(mkS(.08,bill,[1.4,.28,.6]),0,-.14,.36));
+    head.add(P(mkS(.07,m,[.78,.82,.65]),.12,-.02,.08));head.add(P(mkS(.07,m,[.78,.82,.65]),-.12,-.02,.08));
+    const cr1=P(mkC(.042,.037,.3,crest),0,.2,.02);cr1.rotation.x=.25;head.add(cr1);
+    const cr2=P(mkC(.037,.03,.35,crest),0,.38,-.08);cr2.rotation.x=.5;head.add(cr2);
+    const cr3=P(mkC(.03,.022,.35,crest),0,.55,-.25);cr3.rotation.x=.75;head.add(cr3);
+    head.add(P(mkS(.022,crest,[1,.82,.72]),0,.68,-.45));
+    head.add(P(mkS(.02,new THREE.MeshStandardMaterial({color:0x1a2a0a,roughness:.8})),.06,.04,.12));
+    head.add(P(mkS(.02,new THREE.MeshStandardMaterial({color:0x1a2a0a,roughness:.8})),-.06,.04,.12));
+    head.add(P(mkS(.05,ew),.14,.04,.1));head.add(P(mkS(.03,ep),.16,.04,.13));
+    head.add(P(mkS(.05,ew),-.14,.04,.1));head.add(P(mkS(.03,ep),-.16,.04,.13));
     head.position.set(0,4.55,1.25);g.add(head);
-    // Arms
+    // Arms — 6 parts: shoulder, upper, elbow, forearm, wrist, mitten hand
     const armL=new THREE.Group();
-    armL.add(P(mkS(0.035,m,[0.82,0.75,0.68]),0,0,0));
-    armL.add(P(mkC(0.04,0.03,0.25,m),0,-0.12,0));
-    armL.add(P(mkS(0.028,m,[0.8,0.6,0.72]),0,-0.25,0));
-    armL.add(P(mkC(0.03,0.025,0.2,m),0,-0.38,0.02));
-    armL.add(P(mkS(0.022,m,[0.78,0.5,0.68]),0,-0.48,0.03));
-    armL.add(P(mkS(0.03,clawM,[1.1,0.4,1]),0,-0.52,0.04));
-    armL.position.set(0.35,2.3,0.45);armL.rotation.x=-0.3;g.add(armL);
-    const armR=armL.clone();armR.position.x=-0.35;g.add(armR);
-    // Legs
+    armL.add(P(mkS(.035,m,[.82,.75,.68]),0,0,0));armL.add(P(mkC(.04,.03,.25,m),0,-.12,0));
+    armL.add(P(mkS(.028,m,[.8,.6,.72]),0,-.25,0));armL.add(P(mkC(.03,.025,.2,m),0,-.38,.02));
+    armL.add(P(mkS(.022,m,[.78,.5,.68]),0,-.48,.03));armL.add(P(mkS(.03,claw,[1.1,.4,1]),0,-.52,.04));
+    armL.position.set(.35,2.3,.45);armL.rotation.x=-.3;g.add(armL);
+    const armR=armL.clone();armR.position.x=-.35;g.add(armR);
+    // Legs — 11 parts: hip, muscle, thigh, knee, shin, calf, ankle, metatarsal, 3 toes
     const ll=new THREE.Group();
-    ll.add(loftMesh(
-        [[0,0,0],[0.04,-0.1,0.02],[0,-0.42,0],[0,-0.82,0.02],[0,-1.2,0.06],[0,-1.55,0.1],[0,-1.62,0.14]],
-        [0.2,0.15,0.13,0.09,0.09,0.065,0.08],
-        [0.17,0.13,0.1,0.08,0.07,0.055,0.06],
-        m,42,12
-    ));
-    ll.add(P(mkCone(0.013,0.065,clawM),-0.05,-1.72,0.22));
-    ll.add(P(mkCone(0.013,0.075,clawM),0,-1.75,0.25));
-    ll.add(P(mkCone(0.013,0.065,clawM),0.05,-1.72,0.22));
-    ll.position.set(0.4,1.75,-0.1);g.add(ll);
-    const lr=ll.clone();lr.position.x=-0.4;g.add(lr);
-    // Tail
+    ll.add(P(mkS(.2,m,[.82,1.05,.74]),0,0,0));ll.add(P(mkS(.15,m,[.8,.85,.68]),.04,-.1,.02));
+    ll.add(P(mkC(.13,.09,.75,m),0,-.42,0));ll.add(P(mkS(.09,m,[.82,.6,.82]),0,-.82,.02));
+    ll.add(P(mkC(.09,.065,.7,m),0,-1.2,.06));ll.add(P(mkS(.07,m,[.78,.58,.75]),.02,-1,.04));
+    ll.add(P(mkS(.065,m,[.8,.5,.85]),0,-1.55,.1));ll.add(P(mkC(.065,.08,.12,m),0,-1.62,.14));
+    ll.add(P(mkCone(.013,.065,claw),-.05,-1.72,.22));ll.add(P(mkCone(.013,.075,claw),0,-1.75,.25));ll.add(P(mkCone(.013,.065,claw),.05,-1.72,.22));
+    ll.position.set(.4,1.75,-.1);g.add(ll);
+    const lr=ll.clone();lr.position.x=-.4;g.add(lr);
+    // Tail — 7 muscular laterally compressed segments
     const tail=new THREE.Group();
-    tail.add(loftMesh(
-        [[0,0,-0.5],[0,-0.02,-1],[0,-0.04,-1.5],[0,-0.08,-2],[0,-0.12,-2.5],[0,-0.15,-2.95],[0,-0.18,-3.35]],
-        [0.36,0.31,0.26,0.21,0.16,0.1,0.06],
-        [0.22,0.19,0.15,0.11,0.08,0.05,0.03],
-        m,42,16
-    ));
-    tail.position.set(0,2.05,-0.45);g.add(tail);
-    g.userData={parts:{head,neck,legL:ll,legR:lr,tail,body:g.children[0]},bipedal:true,labelY:5.8,scale:0.9};
-    return g;
+    tail.add(P(mkS(.36,m,[1.7,.62,.52]),0,0,-.5));tail.add(P(mkS(.31,m,[1.7,.58,.48]),0,-.02,-1));
+    tail.add(P(mkS(.26,m,[1.7,.52,.44]),0,-.04,-1.5));tail.add(P(mkS(.21,m,[1.8,.46,.38]),0,-.08,-2));
+    tail.add(P(mkS(.16,m,[1.8,.4,.34]),0,-.12,-2.5));tail.add(P(mkS(.1,m,[1.85,.34,.3]),0,-.15,-2.95));
+    tail.add(P(mkS(.06,m,[1.9,.28,.24]),0,-.18,-3.35));
+    tail.position.set(0,2.05,-.45);g.add(tail);
+    g.userData={parts:{head,neck,legL:ll,legR:lr,tail,body:g.children[0]},bipedal:true,labelY:5.8,scale:.9};return g;
 }
 
-/* ── 11. MOSASAURUS ── */
+/* ── OCEAN CREATURE MODELS ── */
 function buildMosasaurus(){
     const g=new THREE.Group();
     const m=skinMat('#1166aa'),ml=skinMat('#2288cc'),dm=skinMat('#0e5590');
-    const ew=new THREE.MeshStandardMaterial({color:0xeeffcc,roughness:0.2}),ep=new THREE.MeshStandardMaterial({color:0x001111});
-    const teeth=new THREE.MeshPhysicalMaterial({color:0xfff8ee,roughness:0.15,clearcoat:0.8,clearcoatRoughness:0.1,sheen:0.2,sheenRoughness:0.3,sheenColor:new THREE.Color(0xffffee)});
-    const finM=skinMat('#1166aa');finM.side=THREE.DoubleSide;
-    // Body
-    const body=loftMesh(
-        [[0,0.08,0.8],[0,0.02,1.4],[0,0,0],[0,-0.18,0],[0,-0.25,-0.4]],
-        [0.6,0.5,1.4,1.15,0.8],
-        [0.5,0.45,0.92,0.65,0.5],
-        m,16,8
-    );
-    g.add(body);
-    // Dorsal ridge
-    for(let i=0;i<8;i++){g.add(P(mkS(0.06-i*0.004,m,[1,0.6,0.4]),0,0.72-0.04*i,-0.7+i*0.32))}
-    // Head
+    const ew=new THREE.MeshStandardMaterial({color:0xeeffcc,roughness:.2}),ep=new THREE.MeshStandardMaterial({color:0x001111});
+    const teeth=new THREE.MeshPhysicalMaterial({color:0xfff8ee,roughness:.15,clearcoat:0.8,clearcoatRoughness:.1,sheen:0.2,sheenRoughness:0.3,sheenColor:new THREE.Color(0xffffee)});
+    const fm=skinMat('#1166aa');fm.side=THREE.DoubleSide;
+    // Body — 8 torpedo segments with dorsal ridge
+    g.add(P(mkS(1.4,m,[2.2,.92,.82]),0,0,0));g.add(P(mkS(1.15,ml,[1.8,.75,.68]),0,-.18,0));
+    g.add(P(mkS(.9,m,[1.5,.82,.72]),0,.08,.8));g.add(P(mkS(.7,m,[1.3,.78,.68]),0,.02,1.4));
+    g.add(P(mkS(.8,dm,[1.6,.6,.62]),0,-.25,-.4));g.add(P(mkS(.6,ml,[1.4,.55,.58]),0,-.2,.6));
+    g.add(P(mkS(.5,dm,[1.1,.72,.6]),.35,-.05,0));g.add(P(mkS(.5,dm,[1.1,.72,.6]),-.35,-.05,0));
+    for(let i=0;i<8;i++){g.add(P(mkS(.06-i*.004,m,[1,.6,.4]),0,.72-.04*i,-.7+i*.32))}
+    // Head — massive double-hinged jaw with more detail
     const head=new THREE.Group();
-    head.add(loftMesh(
-        [[0,0.04,0.7],[0,-0.01,1],[0,-0.08,1.2]],
-        [0.48,0.38,0.15],
-        [0.35,0.26,0.12],
-        m,18,18
-    ));
-    // Jaw
-    head.add(P(mkS(0.28,m,[1.4,0.38,0.46]),0,-0.15,0.65));
-    head.add(P(mkS(0.24,m,[1.4,0.38,0.46]),0,-0.18,1.05));
-    // Jaw muscles
-    head.add(P(mkS(0.2,m,[0.85,0.92,0.72]),0.3,0.02,0.55));head.add(P(mkS(0.2,m,[0.85,0.92,0.72]),-0.3,0.02,0.55));
-    // Teeth bar
-    head.add(P(mkB(0.2,0.022,0.32,teeth),0,-0.06,0.85));
-    for(let i=0;i<10;i++){const t=P(mkCone(0.013,0.068+Math.sin(i*0.35)*0.018,teeth),0.17-0.02*Math.abs(i-4.5),-0.2,0.5+i*0.065);t.rotation.x=Math.PI;head.add(t)}
-    for(let i=0;i<10;i++){const t=P(mkCone(0.012,0.058+Math.sin(i*0.35)*0.014,teeth),0.17-0.02*Math.abs(i-4.5),-0.1,0.5+i*0.065);head.add(t)}
-    // Nostrils
-    head.add(P(mkS(0.035,new THREE.MeshStandardMaterial({color:0x0a1a25,roughness:0.8})),0.12,0.12,0.75));
-    head.add(P(mkS(0.035,new THREE.MeshStandardMaterial({color:0x0a1a25,roughness:0.8})),-0.12,0.12,0.75));
-    // Eyes
-    head.add(P(mkS(0.09,ew),0.34,0.12,0.62));head.add(P(mkS(0.055,ep),0.37,0.12,0.66));
-    head.add(P(mkS(0.09,ew),-0.34,0.12,0.62));head.add(P(mkS(0.055,ep),-0.37,0.12,0.66));
-    head.position.set(0,0.1,1.4);g.add(head);
-    // Front flippers
+    head.add(P(mkS(.48,m,[1.8,.72,.62]),0,.04,.7));head.add(P(mkS(.38,m,[1.6,.58,.56]),0,-.01,1));
+    head.add(P(mkS(.28,m,[1.5,.42,.5]),0,-.15,.65));head.add(P(mkS(.24,m,[1.4,.38,.46]),0,-.18,1.05));
+    head.add(P(mkS(.15,dm,[1.3,.35,.42]),0,-.08,1.2));
+    head.add(P(mkS(.2,m,[.85,.92,.72]),.3,.02,.55));head.add(P(mkS(.2,m,[.85,.92,.72]),-.3,.02,.55));
+    head.add(P(mkB(.2,.022,.32,teeth),0,-.06,.85));
+    for(let i=0;i<10;i++){const t=P(mkCone(.013,.068+Math.sin(i*.35)*.018,teeth),.17-.02*Math.abs(i-4.5),-.2,.5+i*.065);t.rotation.x=Math.PI;head.add(t)}
+    for(let i=0;i<10;i++){const t=P(mkCone(.012,.058+Math.sin(i*.35)*.014,teeth),.17-.02*Math.abs(i-4.5),-.1,.5+i*.065);head.add(t)}
+    head.add(P(mkS(.035,new THREE.MeshStandardMaterial({color:0x0a1a25,roughness:.8})),.12,.12,.75));
+    head.add(P(mkS(.035,new THREE.MeshStandardMaterial({color:0x0a1a25,roughness:.8})),-.12,.12,.75));
+    head.add(P(mkS(.09,ew),.34,.12,.62));head.add(P(mkS(.055,ep),.37,.12,.66));
+    head.add(P(mkS(.09,ew),-.34,.12,.62));head.add(P(mkS(.055,ep),-.37,.12,.66));
+    head.position.set(0,.1,1.4);g.add(head);
+    // Front flippers — jointed hydrofoils
     const fl1=new THREE.Group();
-    fl1.add(P(mkS(0.14,m,[1,1.2,0.6]),0,0,0));fl1.add(P(mkS(0.08,m,[0.9,1,0.5]),0.15,-0.03,0.01));
-    fl1.add(P(mkB(0.3,0.035,0.2,finM),0.2,-0.05,0.02));fl1.add(P(mkB(0.35,0.028,0.17,finM),0.45,-0.07,0.01));fl1.add(P(mkB(0.2,0.02,0.12,finM),0.7,-0.09,0));
-    fl1.position.set(0.7,-0.25,0.5);fl1.rotation.z=-0.25;g.add(fl1);
+    fl1.add(P(mkS(.14,m,[1,1.2,.6]),0,0,0));fl1.add(P(mkS(.08,m,[.9,1,.5]),.15,-.03,.01));
+    fl1.add(P(mkB(.3,.035,.2,fm),.2,-.05,.02));fl1.add(P(mkB(.35,.028,.17,fm),.45,-.07,.01));fl1.add(P(mkB(.2,.02,.12,fm),.7,-.09,0));
+    fl1.position.set(.7,-.25,.5);fl1.rotation.z=-.25;g.add(fl1);
     const fr1=new THREE.Group();
-    fr1.add(P(mkS(0.14,m,[1,1.2,0.6]),0,0,0));fr1.add(P(mkS(0.08,m,[0.9,1,0.5]),-0.15,-0.03,0.01));
-    fr1.add(P(mkB(0.3,0.035,0.2,finM),-0.2,-0.05,0.02));fr1.add(P(mkB(0.35,0.028,0.17,finM),-0.45,-0.07,0.01));fr1.add(P(mkB(0.2,0.02,0.12,finM),-0.7,-0.09,0));
-    fr1.position.set(-0.7,-0.25,0.5);fr1.rotation.z=0.25;g.add(fr1);
-    // Rear flippers
-    const fl2=new THREE.Group();fl2.add(P(mkB(0.3,0.03,0.16,finM),0.15,0,0));fl2.add(P(mkB(0.25,0.025,0.14,finM),0.4,-0.02,0));
-    fl2.position.set(0.5,-0.28,-0.8);fl2.rotation.z=-0.2;g.add(fl2);
-    const fr2=new THREE.Group();fr2.add(P(mkB(0.3,0.03,0.16,finM),-0.15,0,0));fr2.add(P(mkB(0.25,0.025,0.14,finM),-0.4,-0.02,0));
-    fr2.position.set(-0.5,-0.28,-0.8);fr2.rotation.z=0.2;g.add(fr2);
-    // Tail
+    fr1.add(P(mkS(.14,m,[1,1.2,.6]),0,0,0));fr1.add(P(mkS(.08,m,[.9,1,.5]),-.15,-.03,.01));
+    fr1.add(P(mkB(.3,.035,.2,fm),-.2,-.05,.02));fr1.add(P(mkB(.35,.028,.17,fm),-.45,-.07,.01));fr1.add(P(mkB(.2,.02,.12,fm),-.7,-.09,0));
+    fr1.position.set(-.7,-.25,.5);fr1.rotation.z=.25;g.add(fr1);
+    // Rear flippers (3-segment)
+    const fl2=new THREE.Group();fl2.add(P(mkB(.3,.03,.16,fm),.15,0,0));fl2.add(P(mkB(.25,.025,.14,fm),.4,-.02,0));
+    fl2.position.set(.5,-.28,-.8);fl2.rotation.z=-.2;g.add(fl2);
+    const fr2=new THREE.Group();fr2.add(P(mkB(.3,.03,.16,fm),-.15,0,0));fr2.add(P(mkB(.25,.025,.14,fm),-.4,-.02,0));
+    fr2.position.set(-.5,-.28,-.8);fr2.rotation.z=.2;g.add(fr2);
+    // Tail — 6 segments with crescent fluke
     const tail=new THREE.Group();
-    tail.add(loftMesh(
-        [[0,0,-0.9],[0,0.01,-1.8],[0,0.03,-2.6],[0,0.05,-3.3],[0,0.07,-3.9],[0,0.09,-4.3]],
-        [0.62,0.5,0.38,0.28,0.18,0.1],
-        [0.36,0.28,0.2,0.14,0.09,0.05],
-        m,16,8
-    ));
-    tail.add(P(mkB(0.06,0.58,0.32,finM),0,0.13,-4.6));
-    tail.add(P(mkCone(0.06,0.2,finM),0,-0.22,-2.5));
-    tail.position.set(0,0,-0.9);g.add(tail);
-    g.userData={parts:{head,tail,body:g.children[0]},bipedal:false,labelY:2.5,scale:1};
-    return g;
+    tail.add(P(mkS(.62,m,[2,.58,.52]),0,0,-.9));tail.add(P(mkS(.5,m,[2,.52,.46]),0,.01,-1.8));
+    tail.add(P(mkS(.38,m,[2,.45,.4]),0,.03,-2.6));tail.add(P(mkS(.28,m,[2,.38,.34]),0,.05,-3.3));
+    tail.add(P(mkS(.18,m,[2.1,.32,.28]),0,.07,-3.9));tail.add(P(mkS(.1,m,[2.1,.26,.22]),0,.09,-4.3));
+    tail.add(P(mkB(.06,.58,.32,fm),0,.13,-4.6));tail.add(P(mkCone(.06,.2,fm),0,-.22,-2.5));
+    tail.position.set(0,0,-.9);g.add(tail);
+    g.userData={parts:{head,tail,body:g.children[0]},bipedal:false,labelY:2.5,scale:1};return g;
 }
 
-/* ── 12. PLESIOSAURUS ── */
 function buildPlesiosaurus(){
     const g=new THREE.Group();
     const m=skinMat('#2288bb'),nm=skinMat('#1177aa'),ml=skinMat('#33aadd'),dm=skinMat('#1a6699');
-    const ew=new THREE.MeshStandardMaterial({color:0xeeffcc,roughness:0.2}),ep=new THREE.MeshStandardMaterial({color:0x001111});
-    const finM=skinMat('#2288bb');finM.side=THREE.DoubleSide;
-    const teeth=new THREE.MeshPhysicalMaterial({color:0xfff8ee,roughness:0.15,clearcoat:0.8,clearcoatRoughness:0.1,sheen:0.2,sheenRoughness:0.3,sheenColor:new THREE.Color(0xffffee)});
-    // Body
-    const body=loftMesh(
-        [[0,0.08,0.2],[0,0,0],[0,-0.15,0],[0,-0.28,0]],
-        [0.55,1.0,0.82,0.55],
-        [0.6,0.72,0.55,0.2],
-        m,16,8
-    );
-    g.add(body);
-    // Neck (12 segments, very long)
+    const ew=new THREE.MeshStandardMaterial({color:0xeeffcc,roughness:.2}),ep=new THREE.MeshStandardMaterial({color:0x001111});
+    const fm=skinMat('#2288bb');fm.side=THREE.DoubleSide;
+    const teeth=new THREE.MeshPhysicalMaterial({color:0xfff8ee,roughness:.15,clearcoat:0.8,clearcoatRoughness:.1,sheen:0.2,sheenRoughness:0.3,sheenColor:new THREE.Color(0xffffee)});
+    // Body — 7 spheres: wide turtle-like with ribs and gastralia
+    g.add(P(mkS(1,m,[1.6,.72,.92]),0,0,0));g.add(P(mkS(.82,ml,[1.35,.55,.78]),0,-.15,0));
+    g.add(P(mkS(.42,m,[1,.82,.85]),.35,-.02,0));g.add(P(mkS(.42,m,[1,.82,.85]),-.35,-.02,0));
+    g.add(P(mkS(.55,ml,[1.2,.2,.85]),0,-.28,0));g.add(P(mkS(.3,dm,[.9,.7,.8]),.25,.08,.2));
+    g.add(P(mkS(.3,dm,[.9,.7,.8]),-.25,.08,.2));
+    // Neck — 12 segments with smooth taper
     const neck=new THREE.Group();
-    const nd=[{y:0,z:0,r:0.24},{y:0.45,z:0.16,r:0.22},{y:0.88,z:0.32,r:0.2},{y:1.28,z:0.46,r:0.18},{y:1.62,z:0.56,r:0.17},{y:1.95,z:0.65,r:0.15},{y:2.25,z:0.72,r:0.14},{y:2.52,z:0.78,r:0.12},{y:2.76,z:0.82,r:0.11},{y:2.98,z:0.85,r:0.1},{y:3.15,z:0.87,r:0.09},{y:3.3,z:0.89,r:0.08}];
-    const nPts=[],nW=[],nH=[];
-    nd.forEach(s=>{nPts.push([0,s.y,s.z]);nW.push(s.r);nH.push(s.r*0.88)});
-    neck.add(loftMesh(nPts,nW,nH,nm,24,8));
-    neck.position.set(0,0.28,0.65);g.add(neck);
-    // Head
+    [{y:0,z:0,r:.24},{y:.45,z:.16,r:.22},{y:.88,z:.32,r:.2},{y:1.28,z:.46,r:.18},{y:1.62,z:.56,r:.17},{y:1.95,z:.65,r:.15},{y:2.25,z:.72,r:.14},{y:2.52,z:.78,r:.12},{y:2.76,z:.82,r:.11},{y:2.98,z:.85,r:.1},{y:3.15,z:.87,r:.09},{y:3.3,z:.89,r:.08}].forEach(s=>{neck.add(P(mkS(s.r,nm,[1,.92,.85]),0,s.y,s.z))});
+    neck.add(P(mkS(.06,m,[1,.72,.55]),.08,.4,.1));neck.add(P(mkS(.06,m,[1,.72,.55]),-.08,.4,.1));
+    neck.position.set(0,.28,.65);g.add(neck);
+    // Head — small fish-trap with 6 needle teeth per side, cheeks
     const head=new THREE.Group();
-    head.add(loftMesh(
-        [[0,0,0.06],[0,-0.02,0.14],[0,-0.06,0.12]],
-        [0.1,0.065,0.05],
-        [0.08,0.04,0.025],
-        m,18,18
-    ));
-    head.add(P(mkS(0.03,dm,[0.85,0.55,0.5]),0.06,-0.01,0.06));head.add(P(mkS(0.03,dm,[0.85,0.55,0.5]),-0.06,-0.01,0.06));
-    // Teeth
-    for(let i=0;i<6;i++){const t=P(mkCone(0.004,0.024,teeth),0.035-0.006*i,-0.06,0.06+i*0.025);t.rotation.x=Math.PI;head.add(t)}
-    for(let i=0;i<6;i++){const t=P(mkCone(0.004,0.02,teeth),0.035-0.006*i,-0.035,0.06+i*0.025);head.add(t)}
-    // Nostrils
-    head.add(P(mkS(0.015,new THREE.MeshStandardMaterial({color:0x0a1a25,roughness:0.8})),0.03,0.02,0.15));
-    head.add(P(mkS(0.015,new THREE.MeshStandardMaterial({color:0x0a1a25,roughness:0.8})),-0.03,0.02,0.15));
-    // Eyes
-    head.add(P(mkS(0.04,ew),0.07,0.035,0.05));head.add(P(mkS(0.024,ep),0.08,0.035,0.065));
-    head.add(P(mkS(0.04,ew),-0.07,0.035,0.05));head.add(P(mkS(0.024,ep),-0.08,0.035,0.065));
+    head.add(P(mkS(.1,m,[1.35,.78,.72]),0,0,.06));head.add(P(mkS(.065,m,[1.6,.52,.5]),0,-.02,.14));
+    head.add(P(mkS(.05,m,[1.4,.38,.45]),0,-.06,.12));head.add(P(mkS(.03,dm,[.85,.55,.5]),.06,-.01,.06));
+    head.add(P(mkS(.03,dm,[.85,.55,.5]),-.06,-.01,.06));
+    for(let i=0;i<6;i++){const t=P(mkCone(.004,.024,teeth),.035-.006*i,-.06,.06+i*.025);t.rotation.x=Math.PI;head.add(t)}
+    for(let i=0;i<6;i++){const t=P(mkCone(.004,.02,teeth),.035-.006*i,-.035,.06+i*.025);head.add(t)}
+    head.add(P(mkS(.015,new THREE.MeshStandardMaterial({color:0x0a1a25,roughness:.8})),.03,.02,.15));
+    head.add(P(mkS(.015,new THREE.MeshStandardMaterial({color:0x0a1a25,roughness:.8})),-.03,.02,.15));
+    head.add(P(mkS(.04,ew),.07,.035,.05));head.add(P(mkS(.024,ep),.08,.035,.065));
+    head.add(P(mkS(.04,ew),-.07,.035,.05));head.add(P(mkS(.024,ep),-.08,.035,.065));
     head.position.set(0,3.8,1.7);g.add(head);
-    // Four flippers
-    const fl1=new THREE.Group();fl1.add(P(mkS(0.12,m,[1,1.1,0.55]),0,0,0));fl1.add(P(mkS(0.06,m,[0.9,0.9,0.45]),0.12,-0.02,0.005));fl1.add(P(mkB(0.28,0.028,0.18,finM),0.2,-0.03,0.01));fl1.add(P(mkB(0.32,0.022,0.15,finM),0.42,-0.05,0));fl1.add(P(mkB(0.15,0.015,0.1,finM),0.6,-0.06,0));
-    fl1.position.set(0.55,-0.1,0.25);fl1.rotation.z=-0.18;g.add(fl1);
-    const fr1=new THREE.Group();fr1.add(P(mkS(0.12,m,[1,1.1,0.55]),0,0,0));fr1.add(P(mkS(0.06,m,[0.9,0.9,0.45]),-0.12,-0.02,0.005));fr1.add(P(mkB(0.28,0.028,0.18,finM),-0.2,-0.03,0.01));fr1.add(P(mkB(0.32,0.022,0.15,finM),-0.42,-0.05,0));fr1.add(P(mkB(0.15,0.015,0.1,finM),-0.6,-0.06,0));
-    fr1.position.set(-0.55,-0.1,0.25);fr1.rotation.z=0.18;g.add(fr1);
-    const fl2=new THREE.Group();fl2.add(P(mkS(0.09,m,[1,1,0.5]),0,0,0));fl2.add(P(mkS(0.05,m,[0.9,0.85,0.45]),0.1,-0.01,0));fl2.add(P(mkB(0.22,0.025,0.14,finM),0.16,-0.02,0));fl2.add(P(mkB(0.26,0.018,0.12,finM),0.35,-0.04,0));fl2.add(P(mkB(0.12,0.012,0.08,finM),0.5,-0.05,0));
-    fl2.position.set(0.45,-0.1,-0.38);fl2.rotation.z=-0.18;g.add(fl2);
-    const fr2=new THREE.Group();fr2.add(P(mkS(0.09,m,[1,1,0.5]),0,0,0));fr2.add(P(mkS(0.05,m,[0.9,0.85,0.45]),-0.1,-0.01,0));fr2.add(P(mkB(0.22,0.025,0.14,finM),-0.16,-0.02,0));fr2.add(P(mkB(0.26,0.018,0.12,finM),-0.35,-0.04,0));fr2.add(P(mkB(0.12,0.012,0.08,finM),-0.5,-0.05,0));
-    fr2.position.set(-0.45,-0.1,-0.38);fr2.rotation.z=0.18;g.add(fr2);
-    // Tail
+    // Four flippers — 4-5 segments each (wing-like paddle)
+    const fl1=new THREE.Group();fl1.add(P(mkS(.12,m,[1,1.1,.55]),0,0,0));fl1.add(P(mkS(.06,m,[.9,.9,.45]),.12,-.02,.005));fl1.add(P(mkB(.28,.028,.18,fm),.2,-.03,.01));fl1.add(P(mkB(.32,.022,.15,fm),.42,-.05,0));fl1.add(P(mkB(.15,.015,.1,fm),.6,-.06,0));
+    fl1.position.set(.55,-.1,.25);fl1.rotation.z=-.18;g.add(fl1);
+    const fr1=new THREE.Group();fr1.add(P(mkS(.12,m,[1,1.1,.55]),0,0,0));fr1.add(P(mkS(.06,m,[.9,.9,.45]),-.12,-.02,.005));fr1.add(P(mkB(.28,.028,.18,fm),-.2,-.03,.01));fr1.add(P(mkB(.32,.022,.15,fm),-.42,-.05,0));fr1.add(P(mkB(.15,.015,.1,fm),-.6,-.06,0));
+    fr1.position.set(-.55,-.1,.25);fr1.rotation.z=.18;g.add(fr1);
+    const fl2=new THREE.Group();fl2.add(P(mkS(.09,m,[1,1,.5]),0,0,0));fl2.add(P(mkS(.05,m,[.9,.85,.45]),.1,-.01,0));fl2.add(P(mkB(.22,.025,.14,fm),.16,-.02,0));fl2.add(P(mkB(.26,.018,.12,fm),.35,-.04,0));fl2.add(P(mkB(.12,.012,.08,fm),.5,-.05,0));
+    fl2.position.set(.45,-.1,-.38);fl2.rotation.z=-.18;g.add(fl2);
+    const fr2=new THREE.Group();fr2.add(P(mkS(.09,m,[1,1,.5]),0,0,0));fr2.add(P(mkS(.05,m,[.9,.85,.45]),-.1,-.01,0));fr2.add(P(mkB(.22,.025,.14,fm),-.16,-.02,0));fr2.add(P(mkB(.26,.018,.12,fm),-.35,-.04,0));fr2.add(P(mkB(.12,.012,.08,fm),-.5,-.05,0));
+    fr2.position.set(-.45,-.1,-.38);fr2.rotation.z=.18;g.add(fr2);
+    // Tail — 4 segments with diamond fin
     const tail=new THREE.Group();
-    tail.add(loftMesh(
-        [[0,0,-0.4],[0,0.005,-0.8],[0,0.01,-1.15],[0,0.015,-1.4]],
-        [0.3,0.22,0.14,0.08],
-        [0.16,0.12,0.07,0.04],
-        m,24,16
-    ));
-    tail.add(P(mkB(0.04,0.22,0.14,finM),0,0.02,-1.55));
-    tail.position.set(0,-0.04,-0.55);g.add(tail);
-    g.userData={parts:{head,neck,tail,body:g.children[0]},bipedal:false,labelY:4.5,scale:0.85};
-    return g;
+    tail.add(P(mkS(.3,m,[1.6,.52,.48]),0,0,-.4));tail.add(P(mkS(.22,m,[1.65,.44,.4]),0,.005,-.8));
+    tail.add(P(mkS(.14,m,[1.7,.36,.32]),0,.01,-1.15));tail.add(P(mkS(.08,m,[1.8,.3,.26]),0,.015,-1.4));
+    tail.add(P(mkB(.04,.22,.14,fm),0,.02,-1.55));
+    tail.position.set(0,-.04,-.55);g.add(tail);
+    g.userData={parts:{head,neck,tail,body:g.children[0]},bipedal:false,labelY:4.5,scale:.85};return g;
 }
 
-/* ── 13. ICHTHYOSAURUS ── */
 function buildIchthyosaurus(){
     const g=new THREE.Group();
     const m=skinMat('#3399dd'),ml=skinMat('#55bbee'),dm=skinMat('#2277bb');
-    const ew=new THREE.MeshStandardMaterial({color:0xffeebb,roughness:0.2}),ep=new THREE.MeshStandardMaterial({color:0x001111});
-    const finM=skinMat('#2288cc');finM.side=THREE.DoubleSide;
-    const teeth=new THREE.MeshPhysicalMaterial({color:0xfff8ee,roughness:0.15,clearcoat:0.8,clearcoatRoughness:0.1,sheen:0.2,sheenRoughness:0.3,sheenColor:new THREE.Color(0xffffee)});
-    const sclera=new THREE.MeshStandardMaterial({color:0x2a3a4a,roughness:0.6});
-    // Body (dolphin-like fusiform)
-    const body=loftMesh(
-        [[0,0.03,0.35],[0,0.02,0.55],[0,0,0],[0,-0.1,0],[0,-0.12,-0.2]],
-        [0.3,0.35,0.5,0.42,0.25],
-        [0.28,0.32,0.44,0.34,0.2],
-        m,16,8
-    );
-    g.add(body);
-    // Head
+    const ew=new THREE.MeshStandardMaterial({color:0xffeebb,roughness:.2}),ep=new THREE.MeshStandardMaterial({color:0x001111});
+    const fm=skinMat('#2288cc');fm.side=THREE.DoubleSide;
+    const teeth=new THREE.MeshPhysicalMaterial({color:0xfff8ee,roughness:.15,clearcoat:0.8,clearcoatRoughness:.1,sheen:0.2,sheenRoughness:0.3,sheenColor:new THREE.Color(0xffffee)});
+    const sclera=new THREE.MeshStandardMaterial({color:0x2a3a4a,roughness:.6});
+    // Body — 7 streamlined fusiform segments
+    g.add(P(mkS(.5,m,[2,.88,.76]),0,0,0));g.add(P(mkS(.42,ml,[1.7,.68,.62]),0,-.1,0));
+    g.add(P(mkS(.35,m,[1.4,.78,.68]),0,.03,.35));g.add(P(mkS(.3,m,[1.3,.75,.65]),0,.02,.55));
+    g.add(P(mkS(.25,dm,[1.5,.55,.55]),0,-.12,-.2));g.add(P(mkS(.2,ml,[1.2,.62,.56]),.15,-.05,0));
+    g.add(P(mkS(.2,ml,[1.2,.62,.56]),-.15,-.05,0));
+    // Head — elongated snout, ENORMOUS sclerotic ring eyes
     const head=new THREE.Group();
-    head.add(loftMesh(
-        [[0,0.02,0.25],[0,-0.005,0.45],[0,-0.04,0.58],[0,-0.02,0.65]],
-        [0.2,0.14,0.07,0.05],
-        [0.15,0.1,0.05,0.03],
-        m,24,18
-    ));
-    // Jaw
-    head.add(P(mkS(0.1,m,[1.6,0.35,0.38]),0,-0.08,0.42));
-    // Teeth
-    for(let i=0;i<8;i++){const t=P(mkCone(0.004,0.02,teeth),0.045-0.008*i,-0.08,0.28+i*0.045);t.rotation.x=Math.PI;head.add(t)}
-    for(let i=0;i<8;i++){const t=P(mkCone(0.004,0.016,teeth),0.045-0.008*i,-0.04,0.28+i*0.045);head.add(t)}
-    // Nostrils
-    head.add(P(mkS(0.02,new THREE.MeshStandardMaterial({color:0x0a1a25,roughness:0.8})),0.06,0.06,0.3));
-    head.add(P(mkS(0.02,new THREE.MeshStandardMaterial({color:0x0a1a25,roughness:0.8})),-0.06,0.06,0.3));
-    // ENORMOUS eyes with sclerotic ring
-    head.add(P(mkS(0.14,sclera),0.17,0.06,0.18));head.add(P(mkS(0.115,ew),0.175,0.065,0.19));head.add(P(mkS(0.07,ep),0.18,0.065,0.2));
-    head.add(P(mkS(0.14,sclera),-0.17,0.06,0.18));head.add(P(mkS(0.115,ew),-0.175,0.065,0.19));head.add(P(mkS(0.07,ep),-0.18,0.065,0.2));
-    head.position.set(0,0.05,0.55);g.add(head);
-    // Dorsal fin
-    const dorsal=P(mkCone(0.14,0.42,finM),0,0.5,-0.08);g.add(dorsal);
-    // Pectoral flippers
-    const fl=new THREE.Group();fl.add(P(mkS(0.07,m,[1,1,0.5]),0,0,0));fl.add(P(mkB(0.12,0.02,0.09,finM),0.08,-0.01,0));fl.add(P(mkB(0.15,0.016,0.08,finM),0.2,-0.02,0));fl.add(P(mkB(0.1,0.012,0.06,finM),0.32,-0.03,0));
-    fl.position.set(0.32,-0.18,0.12);fl.rotation.z=-0.22;g.add(fl);
-    const fr=new THREE.Group();fr.add(P(mkS(0.07,m,[1,1,0.5]),0,0,0));fr.add(P(mkB(0.12,0.02,0.09,finM),-0.08,-0.01,0));fr.add(P(mkB(0.15,0.016,0.08,finM),-0.2,-0.02,0));fr.add(P(mkB(0.1,0.012,0.06,finM),-0.32,-0.03,0));
-    fr.position.set(-0.32,-0.18,0.12);fr.rotation.z=0.22;g.add(fr);
+    head.add(P(mkS(.2,m,[1.5,.72,.65]),0,.02,.25));head.add(P(mkS(.14,m,[1.8,.48,.42]),0,-.005,.45));
+    head.add(P(mkS(.1,m,[1.6,.35,.38]),0,-.08,.42));head.add(P(mkS(.07,m,[2,.36,.34]),0,-.04,.58));
+    head.add(P(mkS(.05,dm,[1.5,.32,.3]),0,-.02,.65));
+    for(let i=0;i<8;i++){const t=P(mkCone(.004,.02,teeth),.045-.008*i,-.08,.28+i*.045);t.rotation.x=Math.PI;head.add(t)}
+    for(let i=0;i<8;i++){const t=P(mkCone(.004,.016,teeth),.045-.008*i,-.04,.28+i*.045);head.add(t)}
+    head.add(P(mkS(.02,new THREE.MeshStandardMaterial({color:0x0a1a25,roughness:.8})),.06,.06,.3));
+    head.add(P(mkS(.02,new THREE.MeshStandardMaterial({color:0x0a1a25,roughness:.8})),-.06,.06,.3));
+    // ENORMOUS eyes with sclerotic ring + orbit bone
+    head.add(P(mkS(.14,sclera),.17,.06,.18));head.add(P(mkS(.115,ew),.175,.065,.19));head.add(P(mkS(.07,ep),.18,.065,.2));
+    head.add(P(mkS(.14,sclera),-.17,.06,.18));head.add(P(mkS(.115,ew),-.175,.065,.19));head.add(P(mkS(.07,ep),-.18,.065,.2));
+    head.position.set(0,.05,.55);g.add(head);
+    // Dorsal fin — bigger
+    const dorsal=P(mkCone(.14,.42,fm),0,.5,-.08);g.add(dorsal);
+    // Pectoral flippers — 4-segment hydrofoil
+    const fl=new THREE.Group();fl.add(P(mkS(.07,m,[1,1,.5]),0,0,0));fl.add(P(mkB(.12,.02,.09,fm),.08,-.01,0));fl.add(P(mkB(.15,.016,.08,fm),.2,-.02,0));fl.add(P(mkB(.1,.012,.06,fm),.32,-.03,0));
+    fl.position.set(.32,-.18,.12);fl.rotation.z=-.22;g.add(fl);
+    const fr=new THREE.Group();fr.add(P(mkS(.07,m,[1,1,.5]),0,0,0));fr.add(P(mkB(.12,.02,.09,fm),-.08,-.01,0));fr.add(P(mkB(.15,.016,.08,fm),-.2,-.02,0));fr.add(P(mkB(.1,.012,.06,fm),-.32,-.03,0));
+    fr.position.set(-.32,-.18,.12);fr.rotation.z=.22;g.add(fr);
     // Pelvic fins
-    g.add(P(mkB(0.15,0.015,0.08,finM),0.22,-0.16,-0.32));g.add(P(mkB(0.15,0.015,0.08,finM),-0.22,-0.16,-0.32));
-    // Tail
+    g.add(P(mkB(.15,.015,.08,fm),.22,-.16,-.32));g.add(P(mkB(.15,.015,.08,fm),-.22,-.16,-.32));
+    // Tail — 5 segments with reverse heterocercal fin
     const tail=new THREE.Group();
-    tail.add(loftMesh(
-        [[0,0,-0.35],[0,-0.01,-0.72],[0,-0.04,-1.05],[0,-0.07,-1.32],[0,-0.1,-1.55]],
-        [0.24,0.18,0.12,0.08,0.05],
-        [0.13,0.1,0.06,0.04,0.02],
-        m,30,16
-    ));
-    // Reverse heterocercal fin
-    tail.add(P(mkB(0.04,0.38,0.22,finM),0,0.06,-1.7));
-    tail.add(P(mkB(0.03,0.2,0.16,finM),0,-0.16,-1.65));
-    tail.position.set(0,0,-0.45);g.add(tail);
-    g.userData={parts:{head,tail,body:g.children[0]},bipedal:false,labelY:1.5,scale:0.6};
-    return g;
+    tail.add(P(mkS(.24,m,[2,.52,.46]),0,0,-.35));tail.add(P(mkS(.18,m,[2,.44,.4]),0,-.01,-.72));
+    tail.add(P(mkS(.12,m,[2.1,.36,.32]),0,-.04,-1.05));tail.add(P(mkS(.08,m,[2.2,.28,.25]),0,-.07,-1.32));
+    tail.add(P(mkS(.05,m,[2.2,.22,.2]),0,-.1,-1.55));
+    tail.add(P(mkB(.04,.38,.22,fm),0,.06,-1.7));tail.add(P(mkB(.03,.2,.16,fm),0,-.16,-1.65));
+    tail.position.set(0,0,-.45);g.add(tail);
+    g.userData={parts:{head,tail,body:g.children[0]},bipedal:false,labelY:1.5,scale:.6};return g;
 }
 
-/* ── 14. ARCHELON ── */
 function buildArchelon(){
     const g=new THREE.Group();
     const m=skinMat('#33aa66'),shell=skinMat('#558844'),dm=skinMat('#2a8855');
-    const ew=new THREE.MeshStandardMaterial({color:0xeeffcc,roughness:0.2}),ep=new THREE.MeshStandardMaterial({color:0x111100});
-    const finM=skinMat('#33aa66');finM.side=THREE.DoubleSide;
-    const beakM=new THREE.MeshStandardMaterial({color:0x585840,roughness:0.7});
-    // Shell (main body)
-    g.add(P(mkS(1.3,shell,[1.48,0.54,1.15]),0,0.32,0));
-    g.add(P(mkS(0.6,shell,[1.3,0.3,1]),0,0.55,0));
-    // Vertebral scutes
-    for(let i=0;i<7;i++){g.add(P(mkS(0.09+Math.sin(i/6*Math.PI)*0.04,shell,[1.3,0.5,0.85]),0,0.6,-0.7+i*0.24))}
-    // Costal ridges
-    for(let i=0;i<6;i++){const rz=-0.5+i*0.2;g.add(P(mkS(0.06+Math.sin(i/5*Math.PI)*0.02,shell,[0.5,0.3,1.2]),0.38,0.48,rz));g.add(P(mkS(0.06+Math.sin(i/5*Math.PI)*0.02,shell,[0.5,0.3,1.2]),-0.38,0.48,rz))}
-    // Marginal scutes
-    for(let i=0;i<5;i++){const ang=-0.6+i*0.3;g.add(P(mkS(0.05,shell,[0.8,0.35,1]),0.55,0.35,ang));g.add(P(mkS(0.05,shell,[0.8,0.35,1]),-0.55,0.35,ang))}
-    // Plastron
-    g.add(P(mkS(1.05,m,[1.35,0.22,1.02]),0,-0.04,0));
-    // Head
+    const ew=new THREE.MeshStandardMaterial({color:0xeeffcc,roughness:.2}),ep=new THREE.MeshStandardMaterial({color:0x111100});
+    const fm=skinMat('#33aa66');fm.side=THREE.DoubleSide;
+    const beak=new THREE.MeshStandardMaterial({color:0x585840,roughness:.7});
+    // Shell — leatherback-style framework with more scute detail
+    g.add(P(mkS(1.3,shell,[1.48,.54,1.15]),0,.32,0));
+    g.add(P(mkS(.6,shell,[1.3,.3,1]),0,.55,0));
+    // 7 vertebral scutes along center ridge
+    for(let i=0;i<7;i++){g.add(P(mkS(.09+Math.sin(i/6*Math.PI)*.04,shell,[1.3,.5,.85]),0,.6,-.7+i*.24))}
+    // 6 costal ridges per side
+    for(let i=0;i<6;i++){const rz=-.5+i*.2;g.add(P(mkS(.06+Math.sin(i/5*Math.PI)*.02,shell,[.5,.3,1.2]),.38,.48,rz));g.add(P(mkS(.06+Math.sin(i/5*Math.PI)*.02,shell,[.5,.3,1.2]),-.38,.48,rz))}
+    // Marginal scutes along edges
+    for(let i=0;i<5;i++){const ang=-.6+i*.3;g.add(P(mkS(.05,shell,[.8,.35,1]),.55,.35,ang));g.add(P(mkS(.05,shell,[.8,.35,1]),-.55,.35,ang))}
+    // Plastron (belly)
+    g.add(P(mkS(1.05,m,[1.35,.22,1.02]),0,-.04,0));
+    // Head — powerful beak, jaw muscles, cheeks
     const head=new THREE.Group();
-    head.add(loftMesh(
-        [[0,0,0.08],[0,-0.02,0.2],[0,-0.06,0.26],[0,-0.12,0.23]],
-        [0.22,0.14,0.1,0.08],
-        [0.18,0.1,0.07,0.05],
-        m,24,18
-    ));
-    head.add(P(mkS(0.1,beakM,[1.4,0.45,0.52]),0,-0.06,0.26));
-    head.add(P(mkS(0.08,beakM,[1.3,0.35,0.48]),0,-0.12,0.23));
-    head.add(P(mkS(0.06,dm,[0.85,0.6,0.55]),0.06,-0.03,0.18));
-    // Jaw muscles
-    head.add(P(mkS(0.07,m,[0.82,0.85,0.65]),0.13,-0.01,0.04));head.add(P(mkS(0.07,m,[0.82,0.85,0.65]),-0.13,-0.01,0.04));
-    // Eyes
-    head.add(P(mkS(0.058,ew),0.14,0.05,0.06));head.add(P(mkS(0.035,ep),0.15,0.05,0.075));
-    head.add(P(mkS(0.058,ew),-0.14,0.05,0.06));head.add(P(mkS(0.035,ep),-0.15,0.05,0.075));
-    head.add(P(mkS(0.02,m,[1.2,0.6,0.8]),0.1,0.08,0.08));head.add(P(mkS(0.02,m,[1.2,0.6,0.8]),-0.1,0.08,0.08));
-    head.position.set(0,0.08,0.85);g.add(head);
-    // Front flippers (enormous)
-    const ffl=new THREE.Group();ffl.add(P(mkS(0.14,m,[1,1.2,0.55]),0,0,0));ffl.add(P(mkS(0.08,m,[0.9,1,0.48]),0.15,-0.01,0.005));ffl.add(P(mkB(0.32,0.032,0.22,finM),0.25,-0.02,0.01));ffl.add(P(mkB(0.4,0.026,0.18,finM),0.55,-0.04,0));ffl.add(P(mkB(0.22,0.02,0.14,finM),0.82,-0.05,-0.005));
-    ffl.position.set(0.75,-0.06,0.18);ffl.rotation.z=-0.12;ffl.rotation.y=-0.15;g.add(ffl);
-    const ffr=new THREE.Group();ffr.add(P(mkS(0.14,m,[1,1.2,0.55]),0,0,0));ffr.add(P(mkS(0.08,m,[0.9,1,0.48]),-0.15,-0.01,0.005));ffr.add(P(mkB(0.32,0.032,0.22,finM),-0.25,-0.02,0.01));ffr.add(P(mkB(0.4,0.026,0.18,finM),-0.55,-0.04,0));ffr.add(P(mkB(0.22,0.02,0.14,finM),-0.82,-0.05,-0.005));
-    ffr.position.set(-0.75,-0.06,0.18);ffr.rotation.z=0.12;ffr.rotation.y=0.15;g.add(ffr);
-    // Rear flippers
-    const bfl=new THREE.Group();bfl.add(P(mkS(0.09,m,[1,1,0.5]),0,0,0));bfl.add(P(mkS(0.05,m,[0.9,0.9,0.45]),0.08,-0.01,0));bfl.add(P(mkB(0.2,0.025,0.16,finM),0.16,-0.02,0));bfl.add(P(mkB(0.22,0.018,0.14,finM),0.34,-0.03,0));
-    bfl.position.set(0.55,-0.06,-0.55);bfl.rotation.z=-0.12;bfl.rotation.y=0.25;g.add(bfl);
-    const bfr=new THREE.Group();bfr.add(P(mkS(0.09,m,[1,1,0.5]),0,0,0));bfr.add(P(mkS(0.05,m,[0.9,0.9,0.45]),-0.08,-0.01,0));bfr.add(P(mkB(0.2,0.025,0.16,finM),-0.16,-0.02,0));bfr.add(P(mkB(0.22,0.018,0.14,finM),-0.34,-0.03,0));
-    bfr.position.set(-0.55,-0.06,-0.55);bfr.rotation.z=0.12;bfr.rotation.y=-0.25;g.add(bfr);
-    // Tail
+    head.add(P(mkS(.22,m,[1.35,.8,.74]),0,0,.08));head.add(P(mkS(.14,m,[1.3,.62,.6]),0,-.02,.2));
+    head.add(P(mkS(.1,beak,[1.4,.45,.52]),0,-.06,.26));head.add(P(mkS(.08,beak,[1.3,.35,.48]),0,-.12,.23));
+    head.add(P(mkS(.06,dm,[.85,.6,.55]),.06,-.03,.18));
+    head.add(P(mkS(.07,m,[.82,.85,.65]),.13,-.01,.04));head.add(P(mkS(.07,m,[.82,.85,.65]),-.13,-.01,.04));
+    head.add(P(mkS(.058,ew),.14,.05,.06));head.add(P(mkS(.035,ep),.15,.05,.075));
+    head.add(P(mkS(.058,ew),-.14,.05,.06));head.add(P(mkS(.035,ep),-.15,.05,.075));
+    head.add(P(mkS(.02,m,[1.2,.6,.8]),.1,.08,.08));head.add(P(mkS(.02,m,[1.2,.6,.8]),-.1,.08,.08));
+    head.position.set(0,.08,.85);g.add(head);
+    // Front flippers — enormous wing-like, 5 segments
+    const fl=new THREE.Group();fl.add(P(mkS(.14,m,[1,1.2,.55]),0,0,0));fl.add(P(mkS(.08,m,[.9,1,.48]),.15,-.01,.005));fl.add(P(mkB(.32,.032,.22,fm),.25,-.02,.01));fl.add(P(mkB(.4,.026,.18,fm),.55,-.04,0));fl.add(P(mkB(.22,.02,.14,fm),.82,-.05,-.005));
+    fl.position.set(.75,-.06,.18);fl.rotation.z=-.12;fl.rotation.y=-.15;g.add(fl);
+    const fr=new THREE.Group();fr.add(P(mkS(.14,m,[1,1.2,.55]),0,0,0));fr.add(P(mkS(.08,m,[.9,1,.48]),-.15,-.01,.005));fr.add(P(mkB(.32,.032,.22,fm),-.25,-.02,.01));fr.add(P(mkB(.4,.026,.18,fm),-.55,-.04,0));fr.add(P(mkB(.22,.02,.14,fm),-.82,-.05,-.005));
+    fr.position.set(-.75,-.06,.18);fr.rotation.z=.12;fr.rotation.y=.15;g.add(fr);
+    // Rear flippers — 4 segments
+    const bl=new THREE.Group();bl.add(P(mkS(.09,m,[1,1,.5]),0,0,0));bl.add(P(mkS(.05,m,[.9,.9,.45]),.08,-.01,0));bl.add(P(mkB(.2,.025,.16,fm),.16,-.02,0));bl.add(P(mkB(.22,.018,.14,fm),.34,-.03,0));
+    bl.position.set(.55,-.06,-.55);bl.rotation.z=-.12;bl.rotation.y=.25;g.add(bl);
+    const br=new THREE.Group();br.add(P(mkS(.09,m,[1,1,.5]),0,0,0));br.add(P(mkS(.05,m,[.9,.9,.45]),-.08,-.01,0));br.add(P(mkB(.2,.025,.16,fm),-.16,-.02,0));br.add(P(mkB(.22,.018,.14,fm),-.34,-.03,0));
+    br.position.set(-.55,-.06,-.55);br.rotation.z=.12;br.rotation.y=-.25;g.add(br);
+    // Tail — 3 segments
     const tail=new THREE.Group();
-    tail.add(loftMesh(
-        [[0,-0.03,-0.22],[0,-0.05,-0.45],[0,-0.07,-0.65]],
-        [0.16,0.1,0.06],
-        [0.09,0.05,0.03],
-        m,18,16
-    ));
-    tail.position.set(0,0,-0.75);g.add(tail);
-    g.userData={parts:{head,tail,body:g.children[0]},bipedal:false,labelY:1.6,scale:0.9};
-    return g;
+    tail.add(P(mkS(.16,m,[1.5,.55,.48]),0,-.03,-.22));tail.add(P(mkS(.1,m,[1.55,.46,.4]),0,-.05,-.45));tail.add(P(mkS(.06,m,[1.6,.38,.34]),0,-.07,-.65));
+    tail.position.set(0,0,-.75);g.add(tail);
+    g.userData={parts:{head,tail,body:g.children[0]},bipedal:false,labelY:1.6,scale:.9};return g;
 }
 
-/* ── 15. AMMONITE ── */
 function buildAmmonite(){
     const g=new THREE.Group();
-    const shellM=skinMat('#cc4488'),innerShell=skinMat('#ee66aa'),m=skinMat('#bb5599'),dm=skinMat('#aa3377');
-    const ew=new THREE.MeshStandardMaterial({color:0xffeebb,roughness:0.2}),ep=new THREE.MeshStandardMaterial({color:0x110808});
-    // Spiral shell (body is shellG group)
+    const shell=skinMat('#cc4488'),innerShell=skinMat('#ee66aa'),m=skinMat('#bb5599'),dm=skinMat('#aa3377');
+    const ew=new THREE.MeshStandardMaterial({color:0xffeebb,roughness:.2}),ep=new THREE.MeshStandardMaterial({color:0x110808});
+    // Spiral shell — 24 logarithmic segments
     const shellG=new THREE.Group();
-    for(let i=0;i<24;i++){const a=i*0.38,r=0.04+i*0.018,sz=0.022+i*0.011;const piece=mkS(sz,i%3===0?dm:shellM,[1.1,1,0.35]);piece.position.set(Math.cos(a)*r,Math.sin(a)*r,0);piece.rotation.z=a;shellG.add(piece)}
+    for(let i=0;i<24;i++){const a=i*.38,r=.04+i*.018,sz=.022+i*.011;const piece=mkS(sz,i%3===0?dm:shell,[1.1,1,.35]);piece.position.set(Math.cos(a)*r,Math.sin(a)*r,0);piece.rotation.z=a;shellG.add(piece)}
     g.add(shellG);
     // Aperture and inner whorls
-    g.add(P(mkS(0.22,shellM,[1,0.98,0.3]),0,0,0));
-    g.add(P(mkS(0.1,innerShell,[1,1,0.28]),0,0.02,0));
-    g.add(P(mkS(0.04,innerShell,[1,1,0.22]),0,0.06,0.01));
-    // Suture lines
-    for(let i=0;i<16;i++){const a=i*Math.PI*2/16,r=0.16;const ridge=mkS(0.012,shellM,[1,1,0.4]);ridge.position.set(Math.cos(a)*r,Math.sin(a)*r,0);g.add(ridge)}
-    // Growth ridges
-    for(let i=0;i<10;i++){const a=i*Math.PI/5+0.15,r1=0.1,r2=0.22;const ridge=P(mkC(0.005,0.005,0.12,shellM),Math.cos(a)*(r1+r2)/2,Math.sin(a)*(r1+r2)/2,0);ridge.rotation.z=a+Math.PI/2;g.add(ridge)}
-    // Keel ridge
-    for(let i=0;i<8;i++){const a=i*0.5-0.5,r=0.18+i*0.01;g.add(P(mkS(0.008,dm,[1,0.6,0.8]),Math.cos(a)*r,Math.sin(a)*r,0.04))}
-    // Head/body
+    g.add(P(mkS(.22,shell,[1,.98,.3]),0,0,0));g.add(P(mkS(.1,innerShell,[1,1,.28]),0,.02,0));
+    g.add(P(mkS(.04,innerShell,[1,1,.22]),0,.06,.01));
+    // 16 suture lines
+    for(let i=0;i<16;i++){const a=i*Math.PI*2/16,r=.16;const ridge=mkS(.012,shell,[1,1,.4]);ridge.position.set(Math.cos(a)*r,Math.sin(a)*r,0);g.add(ridge)}
+    // 10 growth ridges (radial ribbing)
+    for(let i=0;i<10;i++){const a=i*Math.PI/5+.15,r1=.1,r2=.22;const ridge=P(mkC(.005,.005,.12,shell),Math.cos(a)*(r1+r2)/2,Math.sin(a)*(r1+r2)/2,0);ridge.rotation.z=a+Math.PI/2;g.add(ridge)}
+    // Keel ridge along shell edge
+    for(let i=0;i<8;i++){const a=i*.5-.5,r=.18+i*.01;g.add(P(mkS(.008,dm,[1,.6,.8]),Math.cos(a)*r,Math.sin(a)*r,.04))}
+    // Head/body — more tentacle and body detail
     const head=new THREE.Group();
-    head.add(P(mkS(0.045,m,[1,0.85,0.65]),0,-0.02,0.1));
-    head.add(P(mkS(0.03,m,[1.1,0.72,0.58]),0,-0.04,0.15));
-    head.add(P(mkS(0.02,dm,[0.9,0.6,0.5]),0,-0.05,0.12));
-    // Eyes
-    head.add(P(mkS(0.02,ew),0.03,0.015,0.08));head.add(P(mkS(0.012,ep),0.033,0.015,0.09));
-    head.add(P(mkS(0.02,ew),-0.03,0.015,0.08));head.add(P(mkS(0.012,ep),-0.033,0.015,0.09));
-    // Tentacles
-    for(let i=0;i<10;i++){const a=(i/10)*Math.PI-0.5*Math.PI,tx=Math.cos(a)*0.035;const tent=P(mkC(0.004,0.002,0.065+i*0.003,m),tx,-0.04-(i%2)*0.01,0.14+Math.abs(tx)*0.35);tent.rotation.x=-0.3+(i%3)*0.08;tent.rotation.z=tx*2;head.add(tent)}
-    // Grasping arms
-    const lt=P(mkC(0.005,0.003,0.11,m),0.02,-0.05,0.18);lt.rotation.x=-0.4;head.add(lt);
-    head.add(P(mkS(0.003,m,[1,1,0.8]),0.02,-0.065,0.26));
-    const rt=P(mkC(0.005,0.003,0.11,m),-0.02,-0.05,0.18);rt.rotation.x=-0.4;head.add(rt);
-    head.add(P(mkS(0.003,m,[1,1,0.8]),-0.02,-0.065,0.26));
-    // Hood
-    head.add(P(mkS(0.035,dm,[1.2,0.5,0.8]),0,0.015,0.06));
-    head.position.set(0,-0.04,0.12);g.add(head);
-    const tail=new THREE.Group();tail.position.set(0,0,-0.1);g.add(tail);
-    g.userData={parts:{head,tail,body:shellG},bipedal:false,labelY:0.6,scale:0.2};
-    return g;
+    head.add(P(mkS(.045,m,[1,.85,.65]),0,-.02,.1));head.add(P(mkS(.03,m,[1.1,.72,.58]),0,-.04,.15));
+    head.add(P(mkS(.02,dm,[.9,.6,.5]),0,-.05,.12));
+    head.add(P(mkS(.02,ew),.03,.015,.08));head.add(P(mkS(.012,ep),.033,.015,.09));
+    head.add(P(mkS(.02,ew),-.03,.015,.08));head.add(P(mkS(.012,ep),-.033,.015,.09));
+    // 12 tentacles with more segments
+    for(let i=0;i<10;i++){const a=(i/10)*Math.PI-.5*Math.PI,tx=Math.cos(a)*.035;const tent=P(mkC(.004,.002,.065+i*.003,m),tx,-.04-(i%2)*.01,.14+Math.abs(tx)*.35);tent.rotation.x=-.3+(i%3)*.08;tent.rotation.z=tx*2;head.add(tent)}
+    // 2 longer grasping arms with tips
+    const lt=P(mkC(.005,.003,.11,m),.02,-.05,.18);lt.rotation.x=-.4;head.add(lt);
+    head.add(P(mkS(.003,m,[1,1,.8]),.02,-.065,.26));
+    const rt=P(mkC(.005,.003,.11,m),-.02,-.05,.18);rt.rotation.x=-.4;head.add(rt);
+    head.add(P(mkS(.003,m,[1,1,.8]),-.02,-.065,.26));
+    // Hood (protective tissue over shell opening)
+    head.add(P(mkS(.035,dm,[1.2,.5,.8]),0,.015,.06));
+    head.position.set(0,-.04,.12);g.add(head);
+    const tail=new THREE.Group();tail.position.set(0,0,-.1);g.add(tail);
+    g.userData={parts:{head,tail,body:shellG},bipedal:false,labelY:.6,scale:.2};return g;
 }
 
-/* ── 16. LIOPERDON (Mythic Aquatic) ── */
+/* ── LIOPERDON (Mythic Aquatic Leviathan) ── */
 function buildLioperdon(){
     const g=new THREE.Group();
     const m=skinMat('#0d7377'),dm=skinMat('#094a4d'),lm=skinMat('#4eeacc'),
           fin=skinMat('#7c4dff'),accent=skinMat('#00e5ff'),
-          ewM=new THREE.MeshBasicMaterial({color:0xff1744}),
+          ew=new THREE.MeshBasicMaterial({color:0xff1744}),
           glow=new THREE.MeshBasicMaterial({color:0x00ffd0,transparent:true,opacity:0.6});
-    // Body (GROUP, not g.children[0])
+    // Body — long, sleek torpedo
     const body=new THREE.Group();
-    body.add(loftMesh(
-        [[0,0,1.1],[0,0,0],[0,0,-0.8]],
-        [0.45,0.7,0.45],
-        [0.35,0.49,0.35],
-        m,16,8
-    ));
-    body.add(P(mkS(0.55,lm,[1.1,0.4,1.8]),0,-0.25,0));
+    body.add(P(mkS(.7,m,[1.2,.7,2.2]),0,0,0));
+    body.add(P(mkS(.55,lm,[1.1,.4,1.8]),0,-.25,0));  // lighter belly
     g.add(body);
-    // Neck (4 segments)
+    // Neck — long plesiosaur-style (4 segments)
     const neck=new THREE.Group();
-    neck.add(loftMesh(
-        [[0,0.1,0.9],[0,0.25,1.5],[0,0.4,2.0],[0,0.55,2.4]],
-        [0.3,0.25,0.2,0.18],
-        [0.24,0.2,0.16,0.12],
-        m,24,16
-    ));
+    neck.add(P(mkS(.3,m,[.8,.8,1]),0,.1,.9));
+    neck.add(P(mkS(.25,m,[.7,.7,.9]),0,.25,1.5));
+    neck.add(P(mkS(.2,m,[.65,.65,.8]),0,.4,2.0));
+    neck.add(P(mkS(.18,m,[.6,.6,.7]),0,.55,2.4));
     g.add(neck);
-    // Head
+    // Head — serpentine, fierce
     const head=new THREE.Group();
-    head.add(loftMesh(
-        [[0,0.65,2.9],[0,0.58,3.35]],
-        [0.22,0.15],
-        [0.16,0.1],
-        m,12,18
-    ));
-    // RED eyes
-    head.add(P(mkS(0.08,ewM),0.18,0.75,2.95));
-    head.add(P(mkS(0.08,ewM),-0.18,0.75,2.95));
-    // Crown spines
-    for(let i=-1;i<=1;i++){head.add(P(mkC(0.02,0.01,0.2,accent),i*0.08,1.0,2.85))}
+    head.add(P(mkS(.22,m,[1.1,.7,1.4]),0,.65,2.9));    // cranium
+    head.add(P(mkS(.15,accent,[.9,.5,1.1]),0,.58,3.35)); // snout
+    head.add(P(mkS(.08,ew),.18,.75,2.95));  // left eye
+    head.add(P(mkS(.08,ew),-.18,.75,2.95)); // right eye
+    // Crown spines (mythic crest)
+    for(let i=-1;i<=1;i++){head.add(P(mkC(.02,.01,.2,accent),i*.08,1.0,2.85))}
     // Teeth
-    for(let i=0;i<6;i++){const side=i%2===0?0.06:-0.06;head.add(P(mkCone(0.015,0.06,dm),side,0.48,3.2+i*0.04))}
+    for(let i=0;i<6;i++){const side=i%2===0?.06:-.06;head.add(P(mkCone(.015,.06,dm),side,.48,3.2+i*.04))}
     g.add(head);
-    // Tail (5 segments)
+    // Tail (5 segments, tapering)
     const tail=new THREE.Group();
-    tail.add(loftMesh(
-        [[0,0,-0.85],[0,0,-1.5],[0,0,-2.1],[0,0,-2.6],[0,0,-3.0]],
-        [0.5,0.35,0.25,0.15,0.06],
-        [0.33,0.2,0.12,0.06,0.03],
-        m,30,16
-    ));
-    // Tail fin (mythic purple)
-    tail.add(P(mkS(0.2,fin,[2.5,1.5,0.2]),0,0,-3.0));
+    tail.add(P(mkS(.5,m,[.8,.65,1.0]),0,0,-.85));
+    tail.add(P(mkS(.35,m,[.65,.5,.8]),0,0,-1.5));
+    tail.add(P(mkS(.25,m,[.5,.4,.7]),0,0,-2.1));
+    tail.add(P(mkS(.15,accent,[.4,.3,.6]),0,0,-2.6));
+    // Tail fin (mythic purple, wide)
+    tail.add(P(mkS(.2,fin,[2.5,1.5,.2]),0,0,-3.0));
     g.add(tail);
-    // Flippers (positioned meshes, not groups)
-    const flipFL=P(mkS(0.15,fin,[2.8,0.15,1.2]),0.7,-0.15,0.3);flipFL.rotation.z=-0.25;g.add(flipFL);
-    const flipFR=P(mkS(0.15,fin,[2.8,0.15,1.2]),-0.7,-0.15,0.3);flipFR.rotation.z=0.25;g.add(flipFR);
-    const flipBL=P(mkS(0.12,fin,[2.2,0.12,1.0]),0.6,-0.15,-0.6);flipBL.rotation.z=-0.2;g.add(flipBL);
-    const flipBR=P(mkS(0.12,fin,[2.2,0.12,1.0]),-0.6,-0.15,-0.6);flipBR.rotation.z=0.2;g.add(flipBR);
+    // Flippers — 4 large hydrofoil flippers
+    const flipFL=P(mkS(.15,fin,[2.8,.15,1.2]),.7,-.15,.3);flipFL.rotation.z=-.25;g.add(flipFL);
+    const flipFR=P(mkS(.15,fin,[2.8,.15,1.2]),-.7,-.15,.3);flipFR.rotation.z=.25;g.add(flipFR);
+    const flipBL=P(mkS(.12,fin,[2.2,.12,1.0]),.6,-.15,-.6);flipBL.rotation.z=-.2;g.add(flipBL);
+    const flipBR=P(mkS(.12,fin,[2.2,.12,1.0]),-.6,-.15,-.6);flipBR.rotation.z=.2;g.add(flipBR);
     // Dorsal ridge (bioluminescent)
-    for(let i=0;i<8;i++){g.add(P(mkC(0.015,0.008,0.12,glow),0,0.4-i*0.01,-0.3*i+0.6))}
+    for(let i=0;i<8;i++){g.add(P(mkC(.015,.008,.12,glow),0,.4-i*.01,-.3*i+.6))}
     // Bioluminescent spots
-    const spots=[[0.35,0.1,0.5],[-0.35,0.1,0.5],[0.35,0.1,-0.3],[-0.35,0.1,-0.3],[0.2,0.2,1.2],[-0.2,0.2,1.2],[0.25,0,-1.2],[-0.25,0,-1.2]];
-    spots.forEach(([sx,sy,sz])=>{const s=P(mkS(0.04,glow),sx,sy,sz);s.userData.isSpot=true;g.add(s)});
+    const spots=[[.35,.1,.5],[-.35,.1,.5],[.35,.1,-.3],[-.35,.1,-.3],[.2,.2,1.2],[-.2,.2,1.2],[.25,0,-1.2],[-.25,0,-1.2]];
+    spots.forEach(([sx,sy,sz])=>{const s=P(mkS(.04,glow),sx,sy,sz);s.userData.isSpot=true;g.add(s)});
     // Mythic aura
     const aura=P(mkS(2.5,new THREE.MeshBasicMaterial({color:0x00ffd0,transparent:true,opacity:0.08})),0,0,0);
     g.add(aura);
@@ -1826,205 +1357,455 @@ function buildLioperdon(){
     return g;
 }
 
-/* ── 17. HATZEGOPTERYX (Mythic Pterosaur) ── */
+/* ── HATZEGOPTERYX (Mythic Flying Pterosaur) ── */
 function buildHatzegopteryx(){
     const g=new THREE.Group();
     const m=skinMat('#2e1065'),dm=skinMat('#1a0a3a'),lm=skinMat('#4a2090'),
           wingM=new THREE.MeshStandardMaterial({color:new THREE.Color('#4a148c'),roughness:0.55,transparent:true,opacity:0.8,side:THREE.DoubleSide}),
           edge=new THREE.MeshBasicMaterial({color:0xffab00}),
-          beakM=skinMat('#37474f'),eyeM=new THREE.MeshBasicMaterial({color:0xffd600}),
-          crestM=skinMat('#ff6d00'),talon=skinMat('#212121'),
+          beak=skinMat('#37474f'),eyeM=new THREE.MeshBasicMaterial({color:0xffd600}),
+          crest=skinMat('#ff6d00'),talon=skinMat('#212121'),
           auraM=new THREE.MeshBasicMaterial({color:0x7c4dff,transparent:true,opacity:0.1});
-    // Body (GROUP)
+    // Body — compact, stocky
     const body=new THREE.Group();
-    body.add(loftMesh(
-        [[0,0,0.9],[0,0,0],[0,0,-0.6]],
-        [0.3,0.45,0.3],
-        [0.2,0.34,0.2],
-        m,16,8
-    ));
-    body.add(P(mkS(0.35,lm,[1,0.5,1.4]),0,-0.15,0));
+    body.add(P(mkS(.45,m,[1.1,.75,1.8]),0,0,0));
+    body.add(P(mkS(.35,lm,[1,.5,1.4]),0,-.15,0)); // belly
     g.add(body);
-    // Neck (2 segments)
+    // Neck — thick, short (robust)
     const neck=new THREE.Group();
-    neck.add(loftMesh(
-        [[0,0.15,0.7],[0,0.3,1.1]],
-        [0.2,0.18],
-        [0.14,0.12],
-        m,12,16
-    ));
+    neck.add(P(mkS(.2,m,[.7,.7,.9]),0,.15,.7));
+    neck.add(P(mkS(.18,m,[.6,.65,.8]),0,.3,1.1));
     g.add(neck);
-    // Head (massive skull)
+    // Head — massive skull (Hatzegopteryx defining feature)
     const head=new THREE.Group();
-    head.add(loftMesh(
-        [[0,0.4,1.55],[0,0.3,2.2],[0,0.28,2.6]],
-        [0.25,0.12,0.04],
-        [0.2,0.1,0.04],
-        m,18,18
-    ));
-    head.add(P(mkCone(0.04,0.15,beakM),0,0.28,2.6));
-    // Eyes (glowing yellow)
-    head.add(P(mkS(0.07,eyeM),0.2,0.52,1.6));
-    head.add(P(mkS(0.07,eyeM),-0.2,0.52,1.6));
+    head.add(P(mkS(.25,m,[1.2,.8,1.6]),0,.4,1.55));   // cranium
+    head.add(P(mkS(.12,beak,[.8,.5,1.8]),0,.3,2.2));   // beak
+    head.add(P(mkCone(.04,.15,beak),0,.28,2.6));        // beak tip
+    head.add(P(mkS(.07,eyeM),.2,.52,1.6));              // left eye
+    head.add(P(mkS(.07,eyeM),-.2,.52,1.6));             // right eye
     // Crest (tall, swept back)
-    head.add(P(mkS(0.1,crestM,[0.3,2.5,1.5]),0,0.75,1.3));
-    head.add(P(mkS(0.04,edge,[0.35,0.15,1.6]),0,0.95,1.25));
+    head.add(P(mkS(.1,crest,[.3,2.5,1.5]),0,.75,1.3));
+    head.add(P(mkS(.04,edge,[.35,.15,1.6]),0,.95,1.25));// glow edge
     g.add(head);
-    // Wings
-    const wingL=new THREE.Group();wingL.position.set(0.35,0.05,0);
-    wingL.add(P(mkS(0.08,wingM,[5,0.08,2]),1.2,0,0.1));
-    wingL.add(P(mkS(0.06,wingM,[3.5,0.06,1.4]),2.5,0,0.15));
-    wingL.add(P(mkS(0.04,wingM,[2,0.04,0.8]),3.3,0,0.2));
-    wingL.add(P(mkC(0.02,0.02,5,edge),1.5,0.04,0.7));
+    // Wings (sub-groups for flapping animation)
+    const wingL=new THREE.Group();wingL.position.set(.35,.05,0);
+    wingL.add(P(mkS(.08,wingM,[5,.08,2]),1.2,0,.1));
+    wingL.add(P(mkS(.06,wingM,[3.5,.06,1.4]),2.5,0,.15));
+    wingL.add(P(mkS(.04,wingM,[2,.04,.8]),3.3,0,.2));
+    wingL.add(P(mkC(.02,.02,5,edge),1.5,.04,.7));        // gold leading edge
     g.add(wingL);
-    const wingR=new THREE.Group();wingR.position.set(-0.35,0.05,0);
-    wingR.add(P(mkS(0.08,wingM,[5,0.08,2]),-1.2,0,0.1));
-    wingR.add(P(mkS(0.06,wingM,[3.5,0.06,1.4]),-2.5,0,0.15));
-    wingR.add(P(mkS(0.04,wingM,[2,0.04,0.8]),-3.3,0,0.2));
-    wingR.add(P(mkC(0.02,0.02,5,edge),-1.5,0.04,0.7));
+    const wingR=new THREE.Group();wingR.position.set(-.35,.05,0);
+    wingR.add(P(mkS(.08,wingM,[5,.08,2]),-1.2,0,.1));
+    wingR.add(P(mkS(.06,wingM,[3.5,.06,1.4]),-2.5,0,.15));
+    wingR.add(P(mkS(.04,wingM,[2,.04,.8]),-3.3,0,.2));
+    wingR.add(P(mkC(.02,.02,5,edge),-1.5,.04,.7));
     g.add(wingR);
     // Tail
     const tail=new THREE.Group();
-    tail.add(loftMesh(
-        [[0,0,-0.8],[0,0,-1.3]],
-        [0.18,0.1],
-        [0.1,0.05],
-        m,12,16
-    ));
-    tail.add(P(mkS(0.1,crestM,[0.4,0.35,0.6]),0,0,-1.3));
+    tail.add(P(mkS(.18,m,[.5,.45,1]),0,0,-.8));
+    tail.add(P(mkS(.1,crest,[.4,.35,.6]),0,0,-1.3));
     g.add(tail);
     // Legs/Talons
-    const legL=new THREE.Group();legL.position.set(0.15,-0.3,-0.15);
-    legL.add(P(mkC(0.035,0.025,0.35,talon),0,-0.17,0));
-    legL.add(P(mkCone(0.02,0.1,talon),0.04,-0.4,0.04));
-    legL.add(P(mkCone(0.02,0.1,talon),-0.04,-0.4,0.04));
-    legL.add(P(mkCone(0.02,0.1,talon),0,-0.4,-0.04));
+    const legL=new THREE.Group();legL.position.set(.15,-.3,-.15);
+    legL.add(P(mkC(.035,.025,.35,talon),0,-.17,0));
+    legL.add(P(mkCone(.02,.1,talon),.04,-.4,.04));
+    legL.add(P(mkCone(.02,.1,talon),-.04,-.4,.04));
+    legL.add(P(mkCone(.02,.1,talon),0,-.4,-.04));
     g.add(legL);
-    const legR=new THREE.Group();legR.position.set(-0.15,-0.3,-0.15);
-    legR.add(P(mkC(0.035,0.025,0.35,talon),0,-0.17,0));
-    legR.add(P(mkCone(0.02,0.1,talon),0.04,-0.4,0.04));
-    legR.add(P(mkCone(0.02,0.1,talon),-0.04,-0.4,0.04));
-    legR.add(P(mkCone(0.02,0.1,talon),0,-0.4,-0.04));
+    const legR=new THREE.Group();legR.position.set(-.15,-.3,-.15);
+    legR.add(P(mkC(.035,.025,.35,talon),0,-.17,0));
+    legR.add(P(mkCone(.02,.1,talon),.04,-.4,.04));
+    legR.add(P(mkCone(.02,.1,talon),-.04,-.4,.04));
+    legR.add(P(mkCone(.02,.1,talon),0,-.4,-.04));
     g.add(legR);
     // Mythic aura
     g.add(P(mkS(3,auraM),0,0,0));
     // Glow spots on wings
-    [[1.5,0.06,0],[-1.5,0.06,0],[2.8,0.05,0],[-2.8,0.05,0]].forEach(([sx,sy,sz])=>{
-        const s=P(mkS(0.05,new THREE.MeshBasicMaterial({color:0xffab00,transparent:true,opacity:0.7})),sx,sy,sz);
+    [[1.5,.06,0],[-1.5,.06,0],[2.8,.05,0],[-2.8,.05,0]].forEach(([sx,sy,sz])=>{
+        const s=P(mkS(.05,new THREE.MeshBasicMaterial({color:0xffab00,transparent:true,opacity:0.7})),sx,sy,sz);
         s.userData.isGlowSpot=true;g.add(s)});
     g.userData={parts:{head,tail,body,neck,wingL,wingR,legL,legR},bipedal:false,labelY:3,scale:2.2};
     return g;
 }
 
-/* ── 18. SPINOSAURUS (Mythic) ── */
+/* ── SPINOSAURUS (Mythic Semi-Aquatic Apex Predator) ── */
 function buildSpinosaurus(){
     const g=new THREE.Group();
     const m=skinMat('#8b4513'),dm=skinMat('#5a2d0c'),lm=skinMat('#c47a40'),
-          sailM=skinMat('#ff6d00'),sailDark=skinMat('#cc5500'),
-          teethM=skinMat('#f5f0e0'),ewM=new THREE.MeshStandardMaterial({color:0xffd600,roughness:0.2}),
-          epM=new THREE.MeshStandardMaterial({color:0x110808}),clw=skinMat('#333333');
-    // Body (GROUP)
+          sail=skinMat('#ff6d00'),sailDark=skinMat('#cc5500'),
+          teeth=skinMat('#f5f0e0'),ew=new THREE.MeshStandardMaterial({color:0xffd600,roughness:0.2}),
+          ep=new THREE.MeshStandardMaterial({color:0x110808}),clw=skinMat('#333333');
+    // Body — massive, elongated (bigger than T. rex)
     const body=new THREE.Group();
-    body.add(loftMesh(
-        [[0,0.15,0.5],[0,0,0],[0,0.1,-0.4]],
-        [0.55,0.8,0.55],
-        [0.5,0.68,0.55],
-        m,16,8
-    ));
-    body.add(P(mkS(0.65,lm,[1,0.55,1.6]),0,-0.3,0));
-    // Shoulder/hip muscles
-    body.add(P(mkS(0.35,m,[1.2,1,0.8]),0.1,0.15,0.5));
-    body.add(P(mkS(0.4,m,[1.1,1.1,0.9]),0,0.1,-0.4));
+    body.add(P(mkS(.8,m,[1.1,.85,2.0]),0,0,0));
+    body.add(P(mkS(.65,lm,[1,.55,1.6]),0,-.3,0)); // belly
+    // Shoulder/hip muscle bulges
+    body.add(P(mkS(.35,m,[1.2,1,.8]),.1,.15,.5));
+    body.add(P(mkS(.4,m,[1.1,1.1,.9]),0,.1,-.4));
     g.add(body);
-    // Sail
+    // Sail — iconic! Multiple vertical spine segments with membrane
     const sailG=new THREE.Group();
-    const sailHeights=[0.4,0.6,0.85,1.1,1.3,1.4,1.35,1.2,1.0,0.7,0.45,0.25];
+    const sailHeights=[.4,.6,.85,1.1,1.3,1.4,1.35,1.2,1.0,.7,.45,.25];
     for(let i=0;i<sailHeights.length;i++){
-        const h=sailHeights[i],z=0.6-i*0.18;
-        sailG.add(P(mkC(0.015,0.01,h,dm),0,0.35+h/2,z));
-        sailG.add(P(mkB(0.02,h*0.85,0.12,i%2===0?sailM:sailDark),0,0.35+h*0.42,z));
+        const h=sailHeights[i],z=.6-i*.18;
+        sailG.add(P(mkC(.015,.01,h,dm),0,.35+h/2,z));           // spine
+        sailG.add(P(mkB(.02,h*.85,.12,i%2===0?sail:sailDark),0,.35+h*.42,z)); // membrane
     }
     g.add(sailG);
-    // Neck (3 segments)
+    // Neck — S-curved, crocodilian (3 segments)
     const neck=new THREE.Group();
-    neck.add(loftMesh(
-        [[0,0.1,1.0],[0,0.15,1.55],[0,0.2,2.0]],
-        [0.3,0.25,0.22],
-        [0.23,0.18,0.15],
-        m,18,16
-    ));
+    neck.add(P(mkS(.3,m,[.8,.75,.9]),0,.1,1.0));
+    neck.add(P(mkS(.25,m,[.7,.7,.85]),0,.15,1.55));
+    neck.add(P(mkS(.22,m,[.65,.65,.8]),0,.2,2.0));
     g.add(neck);
-    // Head (crocodile-like)
+    // Head — long crocodile-like snout
     const head=new THREE.Group();
-    head.add(loftMesh(
-        [[0,0.25,2.5],[0,0.18,3.2],[0,0.15,3.75]],
-        [0.22,0.12,0.08],
-        [0.17,0.08,0.05],
-        m,18,18
-    ));
+    head.add(P(mkS(.22,m,[1,.75,1.6]),0,.25,2.5));    // cranium
+    head.add(P(mkS(.12,m,[.7,.45,1.8]),0,.18,3.2));   // snout
+    head.add(P(mkS(.08,m,[.6,.35,1.2]),0,.15,3.75));   // snout tip
     // Nostril bumps
-    head.add(P(mkS(0.04,dm),0.06,0.32,2.65));head.add(P(mkS(0.04,dm),-0.06,0.32,2.65));
+    head.add(P(mkS(.04,dm),.06,.32,2.65));head.add(P(mkS(.04,dm),-.06,.32,2.65));
     // Eyes
-    head.add(P(mkS(0.06,ewM),0.16,0.33,2.55));head.add(P(mkS(0.035,epM),0.17,0.34,2.58));
-    head.add(P(mkS(0.06,ewM),-0.16,0.33,2.55));head.add(P(mkS(0.035,epM),-0.17,0.34,2.58));
-    // Teeth (conical, interlocking)
+    head.add(P(mkS(.06,ew),.16,.33,2.55));head.add(P(mkS(.035,ep),.17,.34,2.58));
+    head.add(P(mkS(.06,ew),-.16,.33,2.55));head.add(P(mkS(.035,ep),-.17,.34,2.58));
+    // Teeth — conical, interlocking
     for(let i=0;i<10;i++){
-        const z=2.7+i*0.12,side=i%2===0?0.08:-0.08;
-        head.add(P(mkCone(0.012,0.06,teethM),side,0.1,z));
+        const z=2.7+i*.12,side=i%2===0?.08:-.08;
+        head.add(P(mkCone(.012,.06,teeth),side,.1,z));
     }
-    // Small crest
-    head.add(P(mkS(0.08,sailM,[1,1.2,0.8]),0,0.42,2.4));
+    // Small crest bump
+    head.add(P(mkS(.08,sail,[1,1.2,.8]),0,.42,2.4));
     g.add(head);
-    // Tail (5 segments + paddle fin)
+    // Tail — long, paddle-like (5 segments + paddle fin)
     const tail=new THREE.Group();
-    tail.add(loftMesh(
-        [[0,0,-0.85],[0,-0.05,-1.5],[0,-0.08,-2.1],[0,-0.1,-2.6],[0,-0.1,-3.0]],
-        [0.5,0.38,0.28,0.2,0.12],
-        [0.33,0.22,0.16,0.1,0.06],
-        m,30,16
-    ));
-    // Paddle fin
-    tail.add(P(mkS(0.15,sailM,[1.8,2,0.15]),0,-0.05,-3.35));
+    tail.add(P(mkS(.5,m,[.75,.65,.9]),0,0,-.85));
+    tail.add(P(mkS(.38,m,[.6,.55,.8]),0,-.05,-1.5));
+    tail.add(P(mkS(.28,m,[.5,.48,.7]),0,-.08,-2.1));
+    tail.add(P(mkS(.2,m,[.4,.42,.6]),0,-.1,-2.6));
+    tail.add(P(mkS(.12,m,[.35,.38,.5]),0,-.1,-3.0));
+    // Paddle fin (flat, for swimming)
+    tail.add(P(mkS(.15,sail,[1.8,2,.15]),0,-.05,-3.35));
     g.add(tail);
-    // Arms
-    const armL=new THREE.Group();armL.position.set(0.45,-0.1,0.5);
-    armL.add(P(mkC(0.06,0.045,0.25,m),0,-0.12,0));
-    armL.add(P(mkC(0.045,0.03,0.2,m),0,-0.3,0.05));
-    armL.add(P(mkCone(0.015,0.08,clw),0.02,-0.42,0.06));
-    armL.add(P(mkCone(0.015,0.08,clw),-0.02,-0.42,0.08));
-    armL.add(P(mkCone(0.015,0.08,clw),0,-0.42,0.1));
+    // Arms — short but strong, 3 claws
+    const armL=new THREE.Group();armL.position.set(.45,-.1,.5);
+    armL.add(P(mkC(.06,.045,.25,m),0,-.12,0));
+    armL.add(P(mkC(.045,.03,.2,m),0,-.3,.05));
+    armL.add(P(mkCone(.015,.08,clw),.02,-.42,.06));
+    armL.add(P(mkCone(.015,.08,clw),-.02,-.42,.08));
+    armL.add(P(mkCone(.015,.08,clw),0,-.42,.1));
     g.add(armL);
-    const armR=new THREE.Group();armR.position.set(-0.45,-0.1,0.5);
-    armR.add(P(mkC(0.06,0.045,0.25,m),0,-0.12,0));
-    armR.add(P(mkC(0.045,0.03,0.2,m),0,-0.3,0.05));
-    armR.add(P(mkCone(0.015,0.08,clw),0.02,-0.42,0.06));
-    armR.add(P(mkCone(0.015,0.08,clw),-0.02,-0.42,0.08));
-    armR.add(P(mkCone(0.015,0.08,clw),0,-0.42,0.1));
+    const armR=new THREE.Group();armR.position.set(-.45,-.1,.5);
+    armR.add(P(mkC(.06,.045,.25,m),0,-.12,0));
+    armR.add(P(mkC(.045,.03,.2,m),0,-.3,.05));
+    armR.add(P(mkCone(.015,.08,clw),.02,-.42,.06));
+    armR.add(P(mkCone(.015,.08,clw),-.02,-.42,.08));
+    armR.add(P(mkCone(.015,.08,clw),0,-.42,.1));
     g.add(armR);
-    // Legs
-    const legL=new THREE.Group();legL.position.set(0.35,-0.3,-0.35);
-    legL.add(P(mkS(0.12,m,[0.8,1.6,0.8]),0,0,0));
-    legL.add(P(mkC(0.06,0.045,0.45,m),0,-0.35,0));
-    legL.add(P(mkS(0.06,dm,[1.2,0.4,1.6]),0,-0.6,0.05));
-    for(let t=0;t<3;t++)legL.add(P(mkCone(0.015,0.1,clw),(t-1)*0.04,-0.65,0.12));
+    // Legs — powerful, digitigrade
+    const legL=new THREE.Group();legL.position.set(.35,-.3,-.35);
+    legL.add(P(mkS(.12,m,[.8,1.6,.8]),0,0,0));        // thigh
+    legL.add(P(mkC(.06,.045,.45,m),0,-.35,0));          // shin
+    legL.add(P(mkS(.06,dm,[1.2,.4,1.6]),0,-.6,.05));    // foot
+    for(let t=0;t<3;t++)legL.add(P(mkCone(.015,.1,clw),(t-1)*.04,-.65,.12));
     g.add(legL);
-    const legR=new THREE.Group();legR.position.set(-0.35,-0.3,-0.35);
-    legR.add(P(mkS(0.12,m,[0.8,1.6,0.8]),0,0,0));
-    legR.add(P(mkC(0.06,0.045,0.45,m),0,-0.35,0));
-    legR.add(P(mkS(0.06,dm,[1.2,0.4,1.6]),0,-0.6,0.05));
-    for(let t=0;t<3;t++)legR.add(P(mkCone(0.015,0.1,clw),(t-1)*0.04,-0.65,0.12));
+    const legR=new THREE.Group();legR.position.set(-.35,-.3,-.35);
+    legR.add(P(mkS(.12,m,[.8,1.6,.8]),0,0,0));
+    legR.add(P(mkC(.06,.045,.45,m),0,-.35,0));
+    legR.add(P(mkS(.06,dm,[1.2,.4,1.6]),0,-.6,.05));
+    for(let t=0;t<3;t++)legR.add(P(mkCone(.015,.1,clw),(t-1)*.04,-.65,.12));
     g.add(legR);
-    // Glow on sail tips
+    // Glow effect on sail tips
     for(let i=2;i<9;i++){
-        const h=sailHeights[i],z=0.6-i*0.18;
-        g.add(P(mkS(0.025,new THREE.MeshBasicMaterial({color:0xff6d00,transparent:true,opacity:0.5})),0,0.35+h+0.05,z));
+        const h=sailHeights[i],z=.6-i*.18;
+        g.add(P(mkS(.025,new THREE.MeshBasicMaterial({color:0xff6d00,transparent:true,opacity:0.5})),0,.35+h+.05,z));
     }
     g.userData={parts:{head,tail,body,neck,legL,legR,armL,armR,sail:sailG},bipedal:true,labelY:3.5,scale:2.0};
     return g;
 }
 
-/* ── BUILDERS MAP ── */
 const BUILDERS={brachiosaurus:buildBrachiosaurus,stegosaurus:buildStegosaurus,diplodocus:buildDiplodocus,compsognathus:buildCompsognathus,archaeopteryx:buildArchaeopteryx,allosaurus:buildAllosaurus,ceratosaurus:buildCeratosaurus,triceratops:buildTriceratops,velociraptor:buildVelociraptor,parasaurolophus:buildParasaurolophus,mosasaurus:buildMosasaurus,plesiosaurus:buildPlesiosaurus,ichthyosaurus:buildIchthyosaurus,archelon:buildArchelon,ammonite:buildAmmonite,lioperdon:buildLioperdon,hatzegopteryx:buildHatzegopteryx,spinosaurus:buildSpinosaurus};
+
+/* ── HYPER-REALISTIC DINOSAUR MODEL ENHANCEMENT (GEOMETRY) ── */
+function enhanceDinoModel(g,id){
+    const p=g.userData.parts;
+    const isSph=c=>c.isMesh&&c.geometry?.parameters?.radius!=null;
+    const isCyl=c=>c.isMesh&&c.geometry?.parameters?.radiusTop>0;
+    const gmat=grp=>{let m;grp.traverse(c=>{if(!m&&c.isMesh&&c.material?.color)m=c.material});return m||skinMat('#888')};
+    const spine=(t,x,y,z,h,r,m)=>{const c=P(mkCone(r,h,m),x,y+h*.5,z);t.add(c)};
+
+    // ── Shared MarchingCubes instance (reused across all dinos) ──
+    if(!enhanceDinoModel._mc){
+        enhanceDinoModel._mc=new MarchingCubes(44,new THREE.MeshStandardMaterial(),true,false,200000);
+    }
+    const mc=enhanceDinoModel._mc;
+
+    // ── METABALL SMOOTHING: merges sphere clusters into single organic mesh ──
+    const metaSmooth=(grp,filterFn,mat,pad,iso)=>{
+        pad=pad||1.25;iso=iso||55;
+        const meshes=grp.children.filter(filterFn);
+        if(meshes.length<2)return;
+        const balls=[];
+        meshes.forEach(s=>{
+            if(!isSph(s))return;
+            const r=s.geometry.parameters.radius;
+            const sx=s.scale?.x||1,sy=s.scale?.y||1,sz=s.scale?.z||1;
+            const maxS=Math.max(sx,sy,sz),minS=Math.min(sx,sy,sz);
+            if(maxS/minS>1.6){
+                const axes=[{a:'x',s:sx},{a:'y',s:sy},{a:'z',s:sz}].sort((a,b)=>b.s-a.s);
+                const n=Math.min(5,Math.ceil(maxS/minS*1.3));
+                const cr=r*(axes[1].s+axes[2].s)/2;
+                const len=r*axes[0].s;
+                for(let i=0;i<n;i++){
+                    const t=n>1?i/(n-1)-.5:0;
+                    const pos=s.position.clone();
+                    pos[axes[0].a]+=len*t*1.6;
+                    balls.push({pos,r:cr*.85});
+                }
+            }else{
+                balls.push({pos:s.position.clone(),r:r*(sx+sy+sz)/3});
+            }
+        });
+        if(balls.length<2)return;
+        const mn=new THREE.Vector3(1e9,1e9,1e9),mx=new THREE.Vector3(-1e9,-1e9,-1e9);
+        balls.forEach(b=>{
+            mn.min(new THREE.Vector3(b.pos.x-b.r,b.pos.y-b.r,b.pos.z-b.r));
+            mx.max(new THREE.Vector3(b.pos.x+b.r,b.pos.y+b.r,b.pos.z+b.r));
+        });
+        const center=mn.clone().add(mx).multiplyScalar(.5);
+        const maxDim=Math.max(mx.x-mn.x,mx.y-mn.y,mx.z-mn.z)*pad;
+        if(maxDim<.001)return;
+        mc.isolation=iso;
+        mc.reset();
+        balls.forEach(b=>{
+            const nx=.5+(b.pos.x-center.x)/maxDim;
+            const ny=.5+(b.pos.y-center.y)/maxDim;
+            const nz=.5+(b.pos.z-center.z)/maxDim;
+            const nr=b.r/maxDim;
+            mc.addBall(nx,ny,nz,iso*nr*nr,false);
+        });
+        mc.update();
+        const cnt=mc.geometry.drawRange.count;
+        if(!cnt||cnt<3)return;
+        const srcP=mc.geometry.attributes.position;
+        const srcN=mc.geometry.attributes.normal;
+        const pos=new Float32Array(cnt*3);
+        const nrm=new Float32Array(cnt*3);
+        for(let i=0;i<cnt;i++){
+            pos[i*3]=center.x+srcP.getX(i)*maxDim*.5;
+            pos[i*3+1]=center.y+srcP.getY(i)*maxDim*.5;
+            pos[i*3+2]=center.z+srcP.getZ(i)*maxDim*.5;
+            nrm[i*3]=srcN.getX(i);
+            nrm[i*3+1]=srcN.getY(i);
+            nrm[i*3+2]=srcN.getZ(i);
+        }
+        const geo=new THREE.BufferGeometry();
+        geo.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));
+        geo.setAttribute('normal',new THREE.Float32BufferAttribute(nrm,3));
+        const mesh=new THREE.Mesh(geo,mat);
+        mesh.castShadow=true;mesh.receiveShadow=true;
+        meshes.forEach(s=>{s.visible=false});
+        grp.add(mesh);
+    };
+
+    // ── SMOOTH TUBE for neck/tail ──
+    const makeTube=(grp,rScale)=>{
+        if(!grp)return;
+        rScale=rScale||1;
+        const allSph=grp.children.filter(isSph);
+        if(allSph.length<3)return;
+        const seq=[allSph[0]];
+        for(let i=1;i<allSph.length;i++){
+            const prev=seq[seq.length-1],curr=allSph[i];
+            const d=prev.position.distanceTo(curr.position);
+            const thresh=(prev.geometry.parameters.radius+curr.geometry.parameters.radius)*4;
+            if(d<=thresh&&d>0)seq.push(curr);else break;
+        }
+        if(seq.length<3)return;
+        const mat=gmat(grp);
+        const pts=seq.map(s=>s.position.clone());
+        const radii=seq.map(s=>{const r=s.geometry.parameters.radius;return r*(s.scale.x+s.scale.z)*.5*rScale});
+        const curve=new THREE.CatmullRomCurve3(pts,false,'catmullrom',0.3);
+        const N=seq.length*8,C=20;
+        const pos=[],nrm=[],uv=[],idx=[];
+        let pN=null,pB=null;
+        for(let i=0;i<=N;i++){
+            const t=i/N,pt=curve.getPointAt(t),tan=curve.getTangentAt(t).normalize();
+            const si=Math.min(Math.floor(t*(radii.length-1)),radii.length-2);
+            const sf=t*(radii.length-1)-si;
+            const r=radii[si]*(1-sf)+radii[si+1]*sf;
+            let n,b;
+            if(!pN){let up=new THREE.Vector3(0,1,0);if(Math.abs(tan.dot(up))>.95)up.set(1,0,0);
+                n=new THREE.Vector3().crossVectors(tan,up).normalize();
+                b=new THREE.Vector3().crossVectors(tan,n).normalize();
+            }else{n=pN.clone().sub(tan.clone().multiplyScalar(tan.dot(pN)));
+                if(n.length()<.001)n=pB.clone();n.normalize();
+                b=new THREE.Vector3().crossVectors(tan,n).normalize();}
+            pN=n.clone();pB=b.clone();
+            for(let j=0;j<=C;j++){const a=(j/C)*Math.PI*2,co=Math.cos(a),si2=Math.sin(a);
+                pos.push(pt.x+r*(co*n.x+si2*b.x),pt.y+r*(co*n.y+si2*b.y),pt.z+r*(co*n.z+si2*b.z));
+                nrm.push(co*n.x+si2*b.x,co*n.y+si2*b.y,co*n.z+si2*b.z);
+                uv.push(j/C,t);}
+        }
+        for(let i=0;i<N;i++)for(let j=0;j<C;j++){const a=i*(C+1)+j,b2=a+C+1;idx.push(a,b2,a+1,a+1,b2,b2+1)}
+        const geo=new THREE.BufferGeometry();
+        geo.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));
+        geo.setAttribute('normal',new THREE.Float32BufferAttribute(nrm,3));
+        geo.setAttribute('uv',new THREE.Float32BufferAttribute(uv,2));
+        geo.setIndex(idx);
+        const mesh=new THREE.Mesh(geo,mat);mesh.castShadow=true;mesh.receiveShadow=true;
+        seq.forEach(s=>{s.visible=false});
+        grp.add(mesh);
+    };
+
+    // ── SMOOTH LEG (tube through joint chain including cylinders) ──
+    const smoothLeg=(grp)=>{
+        if(!grp)return;
+        const nodes=[];
+        grp.children.forEach(c=>{
+            if(isSph(c)){
+                const r=c.geometry.parameters.radius;
+                nodes.push({pos:c.position.clone(),r:r*((c.scale?.x||1)+(c.scale?.z||1))*.5,mesh:c});
+            }else if(isCyl(c)){
+                const rT=c.geometry.parameters.radiusTop,rB=c.geometry.parameters.radiusBottom,h=c.geometry.parameters.height;
+                nodes.push({pos:new THREE.Vector3(c.position.x,c.position.y+h*.35,c.position.z),r:rT*.85+rB*.15,mesh:c});
+                nodes.push({pos:new THREE.Vector3(c.position.x,c.position.y-h*.35,c.position.z),r:rT*.15+rB*.85,mesh:c});
+            }
+        });
+        if(nodes.length<3){
+            const allSph=grp.children.filter(isSph),m=gmat(grp);
+            for(let i=0;i<allSph.length-1;i++){
+                const a=allSph[i],b=allSph[i+1];
+                const ra=a.geometry.parameters.radius,rb=b.geometry.parameters.radius;
+                grp.add(P(mkS((ra+rb)*.52,m,[(a.scale.x+b.scale.x)*.5,(a.scale.y+b.scale.y)*.5,(a.scale.z+b.scale.z)*.5]),
+                    (a.position.x+b.position.x)*.5,(a.position.y+b.position.y)*.5,(a.position.z+b.position.z)*.5));
+            }
+            return;
+        }
+        nodes.sort((a,b)=>b.pos.y-a.pos.y);
+        const unique=[nodes[0]];
+        for(let i=1;i<nodes.length;i++){
+            if(nodes[i].pos.distanceTo(unique[unique.length-1].pos)>.01)unique.push(nodes[i]);
+        }
+        if(unique.length<3)return;
+        const mat=gmat(grp);
+        const pts=unique.map(n=>n.pos);
+        const radii=unique.map(n=>n.r);
+        const curve=new THREE.CatmullRomCurve3(pts,false,'catmullrom',0.3);
+        const N=unique.length*6,C=16;
+        const pos=[],nrm=[],uv=[],idx=[];
+        let pN=null,pB=null;
+        for(let i=0;i<=N;i++){
+            const t=i/N,pt=curve.getPointAt(t),tan=curve.getTangentAt(t).normalize();
+            const si=Math.min(Math.floor(t*(radii.length-1)),radii.length-2);
+            const sf=t*(radii.length-1)-si;
+            const r=radii[si]*(1-sf)+radii[si+1]*sf;
+            let n,b;
+            if(!pN){let up=new THREE.Vector3(0,1,0);if(Math.abs(tan.dot(up))>.95)up.set(1,0,0);
+                n=new THREE.Vector3().crossVectors(tan,up).normalize();
+                b=new THREE.Vector3().crossVectors(tan,n).normalize();
+            }else{n=pN.clone().sub(tan.clone().multiplyScalar(tan.dot(pN)));
+                if(n.length()<.001)n=pB.clone();n.normalize();
+                b=new THREE.Vector3().crossVectors(tan,n).normalize();}
+            pN=n.clone();pB=b.clone();
+            for(let j=0;j<=C;j++){const a=(j/C)*Math.PI*2,co=Math.cos(a),si2=Math.sin(a);
+                pos.push(pt.x+r*(co*n.x+si2*b.x),pt.y+r*(co*n.y+si2*b.y),pt.z+r*(co*n.z+si2*b.z));
+                nrm.push(co*n.x+si2*b.x,co*n.y+si2*b.y,co*n.z+si2*b.z);
+                uv.push(j/C,t);}
+        }
+        for(let i=0;i<N;i++)for(let j=0;j<C;j++){const a=i*(C+1)+j,b2=a+C+1;idx.push(a,b2,a+1,a+1,b2,b2+1)}
+        const geo=new THREE.BufferGeometry();
+        geo.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));
+        geo.setAttribute('normal',new THREE.Float32BufferAttribute(nrm,3));
+        geo.setAttribute('uv',new THREE.Float32BufferAttribute(uv,2));
+        geo.setIndex(idx);
+        const mesh=new THREE.Mesh(geo,mat);mesh.castShadow=true;mesh.receiveShadow=true;
+        grp.children.filter(c=>isSph(c)||isCyl(c)).forEach(c=>{c.visible=false});
+        grp.add(mesh);
+    };
+
+    // ── FILTERS ──
+    const isBodySph=c=>{
+        if(!isSph(c))return false;
+        const col=c.material?.color;if(!col)return false;
+        const b=(col.r+col.g+col.b)/3;
+        return b>0.08&&b<0.9;
+    };
+    const isHeadStruct=c=>{
+        if(!isSph(c))return false;
+        if(c.material?.clearcoat>.5)return false;
+        const col=c.material?.color;if(!col)return false;
+        const b=(col.r+col.g+col.b)/3;
+        return b>0.1&&b<0.85;
+    };
+
+    // ── APPLY SMOOTHING ──
+    metaSmooth(g,isBodySph,gmat(g),1.2,55);
+    if(p.head)metaSmooth(p.head,isHeadStruct,gmat(p.head),1.3,50);
+    makeTube(p.neck,1.05);
+    makeTube(p.tail,1.05);
+    ['legL','legR','legFL','legFR','legBL','legBR'].forEach(k=>{if(p[k])smoothLeg(p[k])});
+    ['armL','armR'].forEach(k=>{if(p[k])smoothLeg(p[k])});
+
+    // ── SPECIES-SPECIFIC FEATURES ──
+    switch(id){
+    case 'brachiosaurus':{
+        const dm=skinMat('#2a9020');
+        for(let i=0;i<14;i++){const h=.25+Math.sin(i/13*Math.PI)*.5;spine(g,0,6.6,-1.5+i*.3,h,.07,dm)}
+        break;}
+    case 'diplodocus':{
+        const dm=skinMat('#3a9a28');
+        for(let i=0;i<10;i++){const h=.2+Math.sin(i/9*Math.PI)*.25;spine(g,0,4.0,-.8+i*.3,h,.04,dm)}
+        break;}
+    case 'allosaurus':{
+        const dm=skinMat('#991a0e');
+        const lc1=P(mkCone(.05,.25,dm),.22,.35,.4);lc1.rotation.x=-.3;if(p.head)p.head.add(lc1);
+        const lc2=P(mkCone(.05,.25,dm),-.22,.35,.4);lc2.rotation.x=-.3;if(p.head)p.head.add(lc2);
+        for(let i=0;i<8;i++){const h=.15+Math.sin(i/7*Math.PI)*.2;spine(g,0,3.2,-.4+i*.2,h,.04,dm)}
+        break;}
+    case 'ceratosaurus':{
+        const horn=new THREE.MeshStandardMaterial({color:0xeeddbb,roughness:.45});
+        for(let i=0;i<10;i++){const sz=.05+Math.sin(i/9*Math.PI)*.04;spine(g,0,2.35,-.4+i*.15,sz*3,.02+sz*.4,horn)}
+        break;}
+    case 'triceratops':{
+        const dm=skinMat('#bb8822');
+        if(p.head){for(let i=0;i<6;i++){const ang=-.9+i*.36,r=.72;
+            p.head.add(P(mkS(.04,dm,[1,.8,1.2]),Math.sin(ang)*r,.22+Math.cos(ang)*r*.85,-.22))}}
+        break;}
+    case 'mosasaurus':{
+        const dm=skinMat('#0e5590');
+        for(let i=0;i<6;i++){spine(g,0,.82,-.8+i*.4,.15+Math.sin(i/5*Math.PI)*.1,.04,dm)}
+        g.add(P(mkS(.2,dm,[.3,1.2,.8]),1.5,-.05,.2));g.add(P(mkS(.2,dm,[.3,1.2,.8]),-1.5,-.05,.2));
+        break;}
+    case 'plesiosaurus':{
+        const dm=skinMat('#1a6699');
+        for(let i=0;i<4;i++){spine(g,0,.75,-.35+i*.2,.1,.03,dm)}
+        break;}
+    case 'spinosaurus':{
+        const sailM=skinMat('#ff6d00');
+        if(p.sail){const sh=[.4,.6,.85,1.1,1.3,1.4,1.35,1.2,1.0,.7,.45,.25];
+            for(let i=2;i<10;i++){spine(p.sail,0,.35+sh[i],.6-i*.18,.12,.015,sailM)}}
+        break;}
+    case 'compsognathus':{
+        const dm=skinMat('#cc7711');
+        for(let i=0;i<5;i++){spine(g,0,.53,-.08+i*.05,.04+Math.sin(i/4*Math.PI)*.03,.008,dm)}
+        break;}
+    case 'velociraptor':{
+        const dm=skinMat('#cc5511');
+        for(let i=0;i<5;i++){spine(g,0,.65,-.08+i*.05,.04+Math.sin(i/4*Math.PI)*.025,.006,dm)}
+        break;}
+    case 'parasaurolophus':{
+        const dm=skinMat('#1a8833');
+        for(let i=0;i<6;i++){const h=.1+Math.sin(i/5*Math.PI)*.15;spine(g,0,2.9,-.3+i*.15,h,.03,dm)}
+        break;}
+    }
+
+    g.traverse(c=>{if(c.isMesh){c.castShadow=true;c.receiveShadow=true}});
+    return g;
+}
+
+
+// Wrap all builders to apply hyper-realistic enhancement post-build
+Object.keys(BUILDERS).forEach(id=>{const orig=BUILDERS[id];BUILDERS[id]=()=>enhanceDinoModel(orig(),id)});
 
 /* ── PLAYER MODEL ── */
 function buildPlayer(){
@@ -2936,6 +2717,7 @@ class Game{
         if(dist>5){logEvent('Get closer to the Jeep to enter it!','#ff9800');return}
         this.driving=true;
         this.player.visible=false;
+        this.controls.minDistance=8;this.controls.maxDistance=30;
         document.getElementById('vehicle-hud').classList.add('show');
         document.getElementById('controls-hint').textContent='WASD: drive \u00b7 Mouse: look \u00b7 E: exit vehicle \u00b7 Tab: index \u00b7 P: photo';
         logEvent('Jumped into the Jeep! Use WASD to drive.','#aed581');
@@ -2973,47 +2755,28 @@ class Game{
         if(this.keys['a'])move.sub(right);if(this.keys['d'])move.add(right);
         if(this.driving){
             /* ── DRIVING MODE ── */
-            // Jeep uses its own forward axis, not camera direction
-            const jRot=this.jeepMesh.rotation.y;
-            const jFwd=new THREE.Vector3(Math.sin(jRot),0,Math.cos(jRot));
-            const jRight=new THREE.Vector3(Math.cos(jRot),0,-Math.sin(jRot));
-            const jMove=new THREE.Vector3();
-            // W/S = forward/back along jeep facing; A/D = turn
-            let throttle=0,steer=0;
-            if(this.keys['w'])throttle+=1;if(this.keys['s'])throttle-=1;
-            if(this.keys['a'])steer+=1;if(this.keys['d'])steer-=1;
-            if(throttle!==0||steer!==0){
-                // Turn the jeep (only while moving or turning in place)
-                const turnRate=2.5; // radians per second
-                if(steer!==0){
-                    const turnDir=throttle>=0?steer:-steer; // reverse steering when backing up
-                    this.jeepMesh.rotation.y+=turnDir*turnRate*dt;
-                }
-                // Move along jeep's forward axis
-                if(throttle!==0){
-                    const jRotNow=this.jeepMesh.rotation.y;
-                    jMove.set(Math.sin(jRotNow)*throttle,0,Math.cos(jRotNow)*throttle);
-                }
-                jMove.normalize();const spd=this.jeepSpeed;
+            if(move.length()>0){
+                move.normalize();const spd=this.jeepSpeed;
                 const jp=this.jeepMesh.position;
-                const nx=jp.x+jMove.x*spd*dt,nz=jp.z+jMove.z*spd*dt;
-                // Block driving into water (ocean, river, pond)
+                const nx=jp.x+move.x*spd*dt,nz=jp.z+move.z*spd*dt;
+                // Block driving into the ocean
                 const{oceanBlend:ob}=getBiome(nx,nz);
-                const destH=terrainH(nx,nz);
-                const inWater=ob>0.3||destH<-0.3;
-                if(inWater){
-                    if(!this._jeepWaterWarnT||this.clock.elapsedTime-this._jeepWaterWarnT>3){
-                        logEvent(ob>0.3?"Can't drive into the ocean!":"The Jeep stalls in water!",'#2a8acc');
-                        this._jeepWaterWarnT=this.clock.elapsedTime;
+                if(ob>0.3){
+                    if(!this._jeepOceanWarnT||this.clock.elapsedTime-this._jeepOceanWarnT>3){
+                        logEvent("Can't drive into the ocean!",'#2a8acc');
+                        this._jeepOceanWarnT=this.clock.elapsedTime;
                     }
-                }else if(throttle!==0){jp.x=nx;jp.z=nz}
+                }else{jp.x=nx;jp.z=nz}
                 jp.x=THREE.MathUtils.clamp(jp.x,-HALF+5,HALF-5);
                 jp.z=THREE.MathUtils.clamp(jp.z,-HALF+5,HALF-5);
                 const th=terrainH(jp.x,jp.z);
                 jp.y=THREE.MathUtils.lerp(jp.y,th+0.01,dt*8); // suspension smoothing
-                // Body tilt into turns (based on steer input)
-                const tiltTarget=steer!==0?-steer*0.08:0;
-                this.jeepMesh.rotation.z=THREE.MathUtils.lerp(this.jeepMesh.rotation.z,tiltTarget,dt*4);
+                // Face direction (slower turn for vehicle feel)
+                const a=Math.atan2(move.x,move.z);let df=a-this.jeepMesh.rotation.y;
+                while(df>Math.PI)df-=Math.PI*2;while(df<-Math.PI)df+=Math.PI*2;
+                this.jeepMesh.rotation.y+=df*Math.min(1,dt*5);
+                // Body tilt into turns
+                this.jeepMesh.rotation.z=THREE.MathUtils.lerp(this.jeepMesh.rotation.z,-df*0.15,dt*4);
                 // Pitch from terrain slope
                 const fwdH=terrainH(jp.x+Math.sin(this.jeepMesh.rotation.y)*1,jp.z+Math.cos(this.jeepMesh.rotation.y)*1);
                 this.jeepMesh.rotation.x=THREE.MathUtils.lerp(this.jeepMesh.rotation.x,(th-fwdH)*0.15,dt*4);
@@ -3027,7 +2790,7 @@ class Game{
                 // Dust particles (heavier than running)
                 if(this.particles&&Math.random()<dt*12){
                     const dustC=getBiome(jp.x,jp.z).biome==='desert'?0xc4a060:getBiome(jp.x,jp.z).biome==='ocean'?0x88ccee:0x8a7a5a;
-                    this.particles.emit(jp.x-jMove.x*1.2+(Math.random()-.5)*.6,th+.1,jp.z-jMove.z*1.2+(Math.random()-.5)*.6,dustC,1.5,.4,.6,.6);
+                    this.particles.emit(jp.x-move.x*1.2+(Math.random()-.5)*.6,th+.1,jp.z-move.z*1.2+(Math.random()-.5)*.6,dustC,1.5,.4,.6,.6);
                 }
                 // Engine sound
                 this.engineTimer+=dt;if(this.engineTimer>0.12){this.engineTimer=0;audio.step()}
@@ -3041,8 +2804,7 @@ class Game{
             }
             // Sync playerPos to jeep for discovery/danger
             this.playerPos.copy(this.jeepMesh.position);
-            // Camera target synced to jeep (actual positioning done after controls.update)
-            this.controls.target.set(this.jeepMesh.position.x,this.jeepMesh.position.y+1.5,this.jeepMesh.position.z);
+            this.controls.target.set(this.jeepMesh.position.x,this.jeepMesh.position.y+2.5,this.jeepMesh.position.z);
         }else{
             /* ── WALKING / SWIMMING MODE ── */
             const{oceanBlend:pob}=getBiome(this.playerPos.x,this.playerPos.z);
@@ -3303,24 +3065,7 @@ class Game{
             this.dustMotes.position.x=this.playerPos.x;
             this.dustMotes.position.z=this.playerPos.z;
         }
-        this.controls.update();
-        // If driving, override camera AFTER controls.update so we always win
-        if(this.driving&&this.jeepMesh){
-            const camDist=14,camH=6;
-            const jr=this.jeepMesh.rotation.y;
-            const jx=this.jeepMesh.position.x,jy=this.jeepMesh.position.y,jz=this.jeepMesh.position.z;
-            const wantX=jx-Math.sin(jr)*camDist;
-            const wantZ=jz-Math.cos(jr)*camDist;
-            const wantY=jy+camH;
-            const lf=1-Math.exp(-3*dt);
-            this.camera.position.set(
-                this.camera.position.x+(wantX-this.camera.position.x)*lf,
-                this.camera.position.y+(wantY-this.camera.position.y)*lf,
-                this.camera.position.z+(wantZ-this.camera.position.z)*lf
-            );
-            this.camera.lookAt(jx,jy+1.5,jz);
-        }
-        this.composer.render();
+        this.controls.update();this.composer.render();
     }
 }
 // Password gate — game only starts after correct password

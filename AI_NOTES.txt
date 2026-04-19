@@ -1,6 +1,7 @@
 ================================================================
   AI COLLABORATION NOTES - Dino Explorer Project
-  Last updated by: Claude (Claude Code CLI)
+  Last updated by: Claude Opus 4.6 (Claude Code CLI)
+  Last update: 2026-02-25 — Hyper-Realistic Graphics Overhaul
 ================================================================
 
 Hey new AI! Welcome to the project. Here's everything you need
@@ -19,7 +20,7 @@ There are now TWO BIOMES with 10 total species.
 - No build tools, no npm, no node on this machine
 - Opens from file:// with internet for CDN
 - Addons: OrbitControls, Sky, EffectComposer, RenderPass,
-  UnrealBloomPass
+  UnrealBloomPass, ShaderPass
 
 ── CURRENT FEATURES (all working) ──
 - WASD third-person movement with sprint (Shift)
@@ -498,8 +499,78 @@ all 15 species plus the player character. Here's what changed:
    - this.particles.update(dt) in game loop
 
 CODE STRUCTURE UPDATE:
-The file is now ~2020 lines. The DinoEntity class has grown
+The file is now ~2815 lines. The DinoEntity class has grown
 significantly with the 3 animation sub-methods. The animate()
 method is the dispatcher, and each sub-method handles its
 domain independently.
+
+── SESSION 4: HYPER-REALISTIC GRAPHICS OVERHAUL (Claude Opus 4.6, 2026-02-25) ──
+
+MAJOR GRAPHICS CHANGES:
+
+1. MATERIAL SYSTEM — ALL upgraded from MeshStandardMaterial to MeshPhysicalMaterial:
+   - skinMat(): Now uses sheen (subsurface scattering), clearcoat (wet surface),
+     and procedural normal maps for micro-detail skin texture
+   - Eyes: MeshPhysicalMaterial with clearcoat=1 for wet glass-like glossiness
+   - Teeth: Clearcoat + sheen for realistic enamel
+   - Vegetation (trees, ferns): Sheen for waxy leaf surfaces
+   - Rocks: Procedural normal maps for mineral detail
+   - Coral: Enhanced emissive + sheen for bioluminescent underwater glow
+   - Terrain: MeshPhysicalMaterial with normal map + sheen + vertex AO
+
+2. PROCEDURAL TEXTURES:
+   - generateDetailNormal(512): 5-octave procedural normal map generator
+   - _detailNormal: Base texture, used for rocks
+   - _skinNormal: 3x3 repeat version, used for all dinosaur skin
+   - _terrainNormal: 40x40 repeat version, used for terrain micro-detail
+
+3. POST-PROCESSING PIPELINE:
+   - RenderPass → UnrealBloomPass → CinematicShader → output
+   - CinematicShader: Custom GLSL fragment shader combining:
+     * Vignette (darkened edges for cinematic feel)
+     * Color grading (contrast 1.1, saturation 1.18, warm temperature)
+     * Film grain (subtle 3% grain, animated with time)
+   - Bloom: Increased to strength=0.14, threshold=0.85 for volumetric light
+
+4. LIGHTING:
+   - Hemisphere light: Cooler sky (0xb0d0ff) + warmer ground (0x3a6828)
+   - Sun: Warmer (0xffeebb), intensity 2.2
+   - Fill light: Blue-ish sky bounce from opposite side
+   - Rim light: Golden back-light for volumetric depth
+   - Ground bounce: Subtle green uplight from terrain
+   - Player-following shadow camera: 120×120 frustum (was 400×400)
+     gives ~3.3× better shadow resolution where the player is
+
+5. SKY & ATMOSPHERE:
+   - Increased turbidity (4), Rayleigh (2.2), Mie (.005/.88)
+   - Richer golden-hour atmosphere
+   - Fog pulled closer for depth: Forest 50-250, Desert 40-200, Ocean 10-80
+   - Atmospheric dust motes: 600 floating particles with additive blending
+     (follow player, subtle drift animation)
+
+6. TERRAIN AO (Ambient Occlusion):
+   - Baked into vertex colors during terrain build
+   - 4-neighbor height sampling to darken concavities
+   - Naturally darkens valleys, riverbeds, terrain depressions
+
+7. WATER:
+   - River/pond: IOR 1.33, thickness 2.0, specular highlights
+   - Ocean: IOR 1.33, thickness 4.0, higher env reflection (4.0)
+   - Ocean waves: 2.5× larger amplitude + extra long-wavelength swells
+   - Underwater overlay: Deeper gradient, animated caustics shimmer
+
+8. GRASS WIND ANIMATION:
+   - onBeforeCompile vertex shader injection
+   - Uses instanceMatrix world position for spatial variation
+   - Multi-frequency wind with gusts (sin of time × position)
+   - Tips sway more than bases (position.y weighting)
+   - Shader uniform `uTime` updated each frame in game loop
+
+PERFORMANCE NOTES:
+- MeshPhysicalMaterial is ~1.5× more expensive than MeshStandard
+- CinematicShader is a single full-screen pass (cheap)
+- Dust motes are 600 point sprites with additive blending (negligible)
+- Terrain AO adds 160K extra terrainH calls at build time (~100ms)
+- Grass wind runs entirely on GPU via vertex shader (free on CPU)
+- Player-following shadows save GPU by rendering smaller shadow area
 
